@@ -10,60 +10,64 @@
 #include "spectre/status.h"
 
 namespace spectre {
+    struct TickInfo {
+        double deltaSeconds;
+        std::uint64_t frameIndex;
+    };
 
-struct TickInfo {
-    double deltaSeconds;
-    std::uint64_t frameIndex;
-};
+    struct ContextConfig {
+        std::string name;
+        std::uint32_t initialStackSize;
+    };
 
-struct ContextConfig {
-    std::string name;
-    std::uint32_t initialStackSize;
-};
+    struct ScriptSource {
+        std::string name;
+        std::string source;
+    };
 
-struct ScriptSource {
-    std::string name;
-    std::string source;
-};
+    struct BytecodeArtifact {
+        std::string name;
+        std::vector<std::uint8_t> data;
+    };
 
-struct BytecodeArtifact {
-    std::string name;
-    std::vector<std::uint8_t> data;
-};
+    struct EvaluationResult {
+        StatusCode status;
+        std::string value;
+        std::string diagnostics;
+    };
 
-struct EvaluationResult {
-    StatusCode status;
-    std::string value;
-    std::string diagnostics;
-};
+    class SpectreContext;
 
-class SpectreContext;
+    class SpectreRuntime {
+    public:
+        static std::unique_ptr<SpectreRuntime> Create(const RuntimeConfig &config);
 
-class SpectreRuntime {
-public:
-    static std::unique_ptr<SpectreRuntime> Create(const RuntimeConfig& config);
+        ~SpectreRuntime();
 
-    ~SpectreRuntime();
+        StatusCode CreateContext(const ContextConfig &config, SpectreContext **outContext);
 
-    StatusCode CreateContext(const ContextConfig& config, SpectreContext** outContext);
-    StatusCode DestroyContext(const std::string& name);
+        StatusCode DestroyContext(const std::string &name);
 
-    EvaluationResult LoadScript(const std::string& contextName, const ScriptSource& script);
-    EvaluationResult LoadBytecode(const std::string& contextName, const BytecodeArtifact& artifact);
+        EvaluationResult LoadScript(const std::string &contextName, const ScriptSource &script);
 
-    EvaluationResult EvaluateSync(const std::string& contextName, const std::string& entryPoint);
-    void Tick(const TickInfo& info);
-    StatusCode Reconfigure(const RuntimeConfig& config);
+        EvaluationResult LoadBytecode(const std::string &contextName, const BytecodeArtifact &artifact);
 
-    const RuntimeConfig& Config() const;
-    TickInfo LastTick() const;
-    StatusCode GetContext(const std::string& name, const SpectreContext** outContext) const;
+        EvaluationResult EvaluateSync(const std::string &contextName, const std::string &entryPoint);
 
-private:
-    struct Impl;
-    std::unique_ptr<Impl> m_Impl;
+        void Tick(const TickInfo &info);
 
-    explicit SpectreRuntime(std::unique_ptr<Impl> impl);
-};
+        StatusCode Reconfigure(const RuntimeConfig &config);
 
+        const RuntimeConfig &Config() const;
+
+        TickInfo LastTick() const;
+
+        StatusCode GetContext(const std::string &name, const SpectreContext **outContext) const;
+
+    private:
+        struct Impl;
+        std::unique_ptr<Impl> m_Impl;
+
+        explicit SpectreRuntime(std::unique_ptr<Impl> impl);
+    };
 }
