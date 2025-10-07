@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <cstdint>
 #include <string>
@@ -7,8 +7,7 @@
 namespace spectre {
     enum class RuntimeMode {
         SingleThread,
-        MultiThread,
-        GpuAccelerated
+        MultiThread
     };
 
     struct MemoryBudget {
@@ -27,8 +26,11 @@ namespace spectre {
         RuntimeMode mode;
         MemoryBudget memory;
         TelemetryConfig telemetry;
+        bool enableGpuAcceleration;
         std::vector<std::string> featureFlags;
     };
 
     RuntimeConfig MakeDefaultConfig();
 }
+
+

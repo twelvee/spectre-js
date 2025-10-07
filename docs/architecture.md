@@ -2,7 +2,7 @@
 
 ## Vision
 
-Spectre-JS is an embeddable JavaScript runtime built for real-time interactive systems. It targets modern ECMAScript compliance while delivering deterministic low-latency execution for game engines and high-frequency UI pipelines. The runtime stack is layered around a pluggable execution core that can switch between single-threaded, multi-threaded, and GPU-accelerated modes without altering the embedding API.
+Spectre-JS is an embeddable JavaScript runtime built for real-time interactive systems. It targets modern ECMAScript compliance while delivering deterministic low-latency execution for game engines and high-frequency UI pipelines. The runtime stack is layered around a pluggable execution core that can switch between single-threaded and multi-threaded execution while optionally enabling GPU acceleration without altering the embedding API.
 
 ## Guiding Principles
 
@@ -15,17 +15,25 @@ Spectre-JS is an embeddable JavaScript runtime built for real-time interactive s
 ## High-Level Architecture
 
 ```
-┌───────────────┐  ┌──────────────────┐  ┌──────────────────┐
-│ Host Engine   │→ │ Spectre Facade   │→ │ Execution Modes   │
-└───────────────┘  └──────────────────┘  ┌────────┬─────────┬─────────┐
-                                         │Single  │Multi     │GPU      │
-                                         │Threaded│Threaded  │Acceler. │
-                                         └────────┴─────────┴─────────┘
-                                                ↓
-                                        ┌──────────────────┐
-                                        │ Runtime Services │
-                                        └──────────────────┘
++-------------+    +-----------------+    +-----------------+
+| Host Engine | -> | Spectre Facade  | -> | Execution Modes |
++-------------+    +-----------------+    +---------+-------+
+                                           | Single  |
+                                           | Thread  |
+                                           +---------+
+                                           | Multi   |
+                                           | Thread  |
+                                           +---------+
+                                                 |
+                                          +--------------------+
+                                          | GPU Acceleration   |
+                                          |        Flag        |
+                                          +--------------------+
+                                          +--------------------+
+                                          | Runtime Services   |
+                                          +--------------------+
 ```
+
 
 ### Spectre Facade Layer
 
@@ -43,10 +51,11 @@ Provides the primary embedding API: context creation, script/module loading, exe
    - Tiered JIT warm-up across worker pools.
    - Deterministic barriers for frame boundaries.
 
-3. **GPU Accelerated Mode**
-   - JS bytecode lowered into SPIR-V-like compute kernels for hot loops.
-   - Heterogeneous pipeline: CPU handles control flow, GPU workers offload vectorizable kernels.
-   - Memory-broker coordinates unified memory snapshots.
+### GPU Acceleration Flag
+
+- JS bytecode hot spots can be lowered into SPIR-V-like compute kernels when the flag is enabled.
+- CPU manages control flow while GPU workers offload vectorizable kernels.
+- Memory broker coordinates unified snapshots to keep GPU-visible buffers coherent.
 
 Mode selection is hot-swappable at runtime via `SpectreRuntime::reconfigure` while maintaining state continuity through snapshotting and deterministic garbage collection checkpoints.
 
@@ -65,7 +74,7 @@ Mode selection is hot-swappable at runtime via `SpectreRuntime::reconfigure` whi
 
 | Concept | Description |
 |---------|-------------|
-| `SpectreRuntimeConfig` | Declarative configuration for startup, including mode, memory budgets, feature flags. |
+| `SpectreRuntimeConfig` | Declarative configuration for startup, including mode, memory budgets, GPU acceleration flag, and feature toggles. |
 | `SpectreRuntime` | Owning handle to the engine instance; responsible for lifecycle, script/module management, execution. |
 | `SpectreContext` | Lightweight execution contexts for isolated script environments (e.g., UI panels, gameplay systems). |
 | `SpectreScript` | Represents loaded source or bytecode artifacts. |
@@ -148,4 +157,9 @@ Mode selection is hot-swappable at runtime via `SpectreRuntime::reconfigure` whi
 ## Coding Standards
 
 See `docs/coding_conventions.md` for naming, error handling, and object model rules that all runtime and embedding code must follow.
+
+
+
+
+
 

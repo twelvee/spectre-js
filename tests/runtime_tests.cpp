@@ -1,4 +1,4 @@
-﻿#include <iostream>
+#include <iostream>
 #include <string>
 #include <vector>
 
@@ -196,11 +196,13 @@ namespace {
         ok &= ExpectTrue(last.deltaSeconds == 0.008, "Tick delta seconds");
         auto updated = runtime->Config();
         updated.memory.heapBytes += 4096;
+        updated.enableGpuAcceleration = true;
         auto sameModeStatus = runtime->Reconfigure(updated);
         ok &= ExpectStatus(sameModeStatus, StatusCode::Ok, "Reconfigure same mode");
         auto reloaded = runtime->Config();
         ok &= ExpectTrue(reloaded.memory.heapBytes == updated.memory.heapBytes, "Config heap updated");
-        updated.mode = RuntimeMode::GpuAccelerated;
+        ok &= ExpectTrue(reloaded.enableGpuAcceleration, "GPU flag applied");
+        updated.mode = RuntimeMode::MultiThread;
         auto modeChangeStatus = runtime->Reconfigure(updated);
         ok &= ExpectStatus(modeChangeStatus, StatusCode::InvalidArgument, "Reconfigure mode change rejected");
         return ok;
@@ -302,3 +304,7 @@ int main() {
     std::cout << "Executed " << passed << " / " << tests.size() << " tests" << std::endl;
     return 0;
 }
+
+
+
+
