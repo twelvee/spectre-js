@@ -1,13 +1,33 @@
+#include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <sstream>
 #include <string>
 
 #include "spectre/config.h"
 #include "spectre/runtime.h"
 #include "spectre/status.h"
 #include "spectre/es2025/environment.h"
+#include "spectre/es2025/modules/global_module.h"
 
 namespace {
+    std::string LoadBootstrapScript() {
+        const char *candidates[] = {
+            "examples/scripts/global_bootstrap.js",
+            "../examples/scripts/global_bootstrap.js",
+            "../../examples/scripts/global_bootstrap.js"
+        };
+        for (const auto *path: candidates) {
+            std::ifstream stream(path);
+            if (stream) {
+                std::ostringstream buffer;
+                buffer << stream.rdbuf();
+                return buffer.str();
+            }
+        }
+        return "return 'spectre-js::global-bootstrap-fallback';";
+    }
+
     void PrintModuleCatalog(const spectre::es2025::Environment &environment) {
         const auto &modules = environment.Modules();
         std::cout << "ES2025 module catalog (" << modules.size() << ")" << std::endl;
@@ -21,12 +41,41 @@ namespace {
         }
     }
 
-    bool DriveHostTicks(spectre::SpectreRuntime &runtime, std::uint32_t frames) {
+    void EvaluateSampleScripts(spectre::es2025::GlobalModule &globalModule) {
+        std::cout << "\nExecuting global scripts" << std::endl;
+        std::string value;
+        std::string diagnostics;
+
+        auto fileScript = LoadBootstrapScript();
+        auto status = globalModule.EvaluateScript(fileScript, value, diagnostics, "bootstrap-from-file");
+        if (status != spectre::StatusCode::Ok) {
+            std::cerr << "  bootstrap file failed: " << diagnostics << std::endl;
+        } else {
+            std::cout << "  bootstrap file => " << value << " (" << diagnostics << ")" << std::endl;
+        }
+
+        const char *inlineScript = "return 'spectre-es2025-inline';";
+        status = globalModule.EvaluateScript(inlineScript, value, diagnostics, "inline");
+        if (status != spectre::StatusCode::Ok) {
+            std::cerr << "  inline failed: " << diagnostics << std::endl;
+            return;
+        }
+        std::cout << "  inline => " << value << " (" << diagnostics << ")" << std::endl;
+
+        const char *numeric = "return (12 + 8) / 5;";
+        status = globalModule.EvaluateScript(numeric, value, diagnostics, "numeric");
+        if (status != spectre::StatusCode::Ok) {
+            std::cerr << "  numeric failed: " << diagnostics << std::endl;
+            return;
+        }
+        std::cout << "  numeric => " << value << " (" << diagnostics << ")" << std::endl;
+    }
+
+    void DriveHostTicks(spectre::SpectreRuntime &runtime, std::uint32_t frames) {
         for (std::uint32_t frame = 0; frame < frames; ++frame) {
             spectre::TickInfo tick{0.016, frame};
             runtime.Tick(tick);
         }
-        return true;
     }
 }
 
@@ -43,16 +92,20 @@ int main() {
     }
 
     auto &environment = runtime->EsEnvironment();
-
     PrintModuleCatalog(environment);
 
-    // Simulate production tick loop (3 frames here for brevity).
-    if (!DriveHostTicks(*runtime, 3)) {
-        std::cerr << "Tick loop failed" << std::endl;
+    auto *globalModulePtr = environment.FindModule("Global");
+    auto *globalModule = dynamic_cast<es2025::GlobalModule *>(globalModulePtr);
+    if (!globalModule) {
+        std::cerr << "Global module unavailable" << std::endl;
         return 1;
     }
 
-    // Toggle GPU acceleration to ensure OptimizeGpu hooks are exercised.
+    EvaluateSampleScripts(*globalModule);
+
+    std::cout << "\nSimulating production tick loop" << std::endl;
+    DriveHostTicks(*runtime, 3);
+
     auto gpuConfig = runtime->Config();
     gpuConfig.enableGpuAcceleration = true;
     if (runtime->Reconfigure(gpuConfig) != StatusCode::Ok) {
@@ -60,31 +113,19 @@ int main() {
         return 1;
     }
     environment.OptimizeGpu(true);
+    std::cout << "GPU acceleration flag propagated" << std::endl;
 
-    // Perform a final tick pass with GPU acceleration enabled.
-    if (!DriveHostTicks(*runtime, 2)) {
-        std::cerr << "Tick loop failed under GPU configuration" << std::endl;
+    DriveHostTicks(*runtime, 2);
+
+    std::string value;
+    std::string diagnostics;
+    auto status = globalModule->EvaluateScript("return 'final-pass';", value, diagnostics, "final");
+    if (status != StatusCode::Ok) {
+        std::cerr << "Final evaluation failed: " << diagnostics << std::endl;
         return 1;
     }
+    std::cout << "Final script => " << value << " (" << diagnostics << ")" << std::endl;
 
-    // Query a few individual modules through the index to mimic production lookups.
-    constexpr const char *kSmokeTests[] = {
-        "Global",
-        "Array",
-        "Promise",
-        "Intl",
-        "Temporal"
-    };
-
-    for (const auto *name: kSmokeTests) {
-        const auto *module = environment.FindModule(name);
-        if (!module) {
-            std::cerr << "Missing ES2025 module: " << name << std::endl;
-            return 1;
-        }
-        std::cout << "Verified module: " << module->Name() << std::endl;
-    }
-
-    std::cout << "ES2025 production scaffold ready" << std::endl;
+    std::cout << "\nES2025 production scaffold ready" << std::endl;
     return 0;
 }

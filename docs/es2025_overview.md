@@ -25,3 +25,8 @@ The environment registers modules in spec order, builds an index for lookup, and
 
 Refer to the stub bodies in es2025/modules/*.cpp for TODO markers that indicate where the concrete implementations should land.
 
+### Global Module
+- GlobalModule now provisions the default global.main context during initialization.
+- Hosts can call EvaluateScript to compile and execute inline source against a target context while reusing Spectre caching paths.
+- EnsureContext allows deterministic creation of additional global realms with tuned stack budgets.
+- GPU toggles propagate through OptimizeGpu, enabling module-specific accelerators once implemented.

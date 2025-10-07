@@ -1,4 +1,4 @@
-﻿#include <iostream>
+#include <iostream>
 #include <string>
 #include <vector>
 
@@ -7,6 +7,8 @@
 #include "spectre/runtime.h"
 #include "spectre/status.h"
 #include "spectre/subsystems.h"
+#include "spectre/es2025/environment.h"
+#include "spectre/es2025/modules/global_module.h"
 
 namespace {
     using spectre::RuntimeConfig;
@@ -339,6 +341,97 @@ namespace {
         return ok;
     }
 
+    bool GlobalModuleInitializesDefaultContext() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        bool ok = ExpectTrue(runtime != nullptr, "Runtime created");
+        if (!ok) {
+            return false;
+        }
+        auto &environment = runtime->EsEnvironment();
+        auto *module = environment.FindModule("Global");
+        auto *globalModule = dynamic_cast<spectre::es2025::GlobalModule *>(module);
+        ok &= ExpectTrue(globalModule != nullptr, "Global module available");
+        if (!globalModule) {
+            return false;
+        }
+        ok &= ExpectTrue(!globalModule->DefaultContext().empty(), "Default context name");
+        const SpectreContext *context = nullptr;
+        auto status = runtime->GetContext(globalModule->DefaultContext(), &context);
+        ok &= ExpectStatus(status, StatusCode::Ok, "Default context created");
+        ok &= ExpectTrue(context != nullptr, "Context pointer valid");
+        if (context != nullptr) {
+            ok &= ExpectTrue(context->Name() == globalModule->DefaultContext(), "Context name matches");
+            ok &= ExpectTrue(context->StackSize() == globalModule->DefaultStackSize(), "Stack size matches");
+        }
+        return ok;
+    }
+
+    bool GlobalModuleEvaluatesScripts() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        bool ok = ExpectTrue(runtime != nullptr, "Runtime created");
+        if (!ok) {
+            return false;
+        }
+        auto &environment = runtime->EsEnvironment();
+        auto *globalModule = dynamic_cast<spectre::es2025::GlobalModule *>(environment.FindModule("Global"));
+        ok &= ExpectTrue(globalModule != nullptr, "Global module available");
+        if (!globalModule) {
+            return false;
+        }
+        std::string value;
+        std::string diagnostics;
+        auto status = globalModule->EvaluateScript("return 'spectre-global';", value, diagnostics, "boot");
+        ok &= ExpectStatus(status, StatusCode::Ok, "Initial evaluation");
+        ok &= ExpectTrue(value == "spectre-global", "Return value");
+        ok &= ExpectTrue(diagnostics == "ok", "Diagnostics ok");
+        const SpectreContext *context = nullptr;
+        runtime->GetContext(globalModule->DefaultContext(), &context);
+        const spectre::ScriptRecord *record = nullptr;
+        if (context != nullptr) {
+            auto scriptStatus = context->GetScript("boot", &record);
+            ok &= ExpectStatus(scriptStatus, StatusCode::Ok, "Script stored");
+            if (record != nullptr) {
+                ok &= ExpectTrue(!record->bytecode.empty(), "Bytecode emitted");
+                ok &= ExpectTrue(!record->bytecodeHash.empty(), "Bytecode hash");
+            }
+        }
+        status = globalModule->EvaluateScript("return 'spectre-global-2';", value, diagnostics, "boot");
+        ok &= ExpectStatus(status, StatusCode::Ok, "Reload evaluation");
+        ok &= ExpectTrue(value == "spectre-global-2", "Reload result");
+        if (context != nullptr) {
+            ok &= ExpectTrue(context->ScriptVersion("boot") == 2, "Version increments");
+        }
+        return ok;
+    }
+
+    bool GlobalModuleReconfigureTogglesGpu() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        bool ok = ExpectTrue(runtime != nullptr, "Runtime created");
+        if (!ok) {
+            return false;
+        }
+        auto &environment = runtime->EsEnvironment();
+        auto *globalModule = dynamic_cast<spectre::es2025::GlobalModule *>(environment.FindModule("Global"));
+        ok &= ExpectTrue(globalModule != nullptr, "Global module available");
+        if (!globalModule) {
+            return false;
+        }
+        ok &= ExpectTrue(!globalModule->GpuEnabled(), "GPU disabled by default");
+        auto config = runtime->Config();
+        config.enableGpuAcceleration = true;
+        auto status = runtime->Reconfigure(config);
+        ok &= ExpectStatus(status, StatusCode::Ok, "Runtime reconfigure");
+        environment.OptimizeGpu(true);
+        ok &= ExpectTrue(globalModule->GpuEnabled(), "GPU enabled flag");
+        std::string value;
+        std::string diagnostics;
+        status = globalModule->EvaluateScript("return 42;", value, diagnostics, "gpuCheck");
+        ok &= ExpectStatus(status, StatusCode::Ok, "Evaluation under GPU");
+        ok &= ExpectTrue(value == "42", "Numeric result");
+        ok &= ExpectTrue(diagnostics == "ok", "Diagnostics ok");
+        return ok;
+    }
+
     struct TestCase {
         const char *name;
 
@@ -359,6 +452,9 @@ int main() {
         {"DestroyContextRejectsOperations", DestroyContextRejectsOperations},
         {"MultiThreadLifecycle", MultiThreadLifecycle},
         {"SubsystemSuiteProvidesCpuBackends", SubsystemSuiteProvidesCpuBackends},
+        {"GlobalModuleInitializesDefaultContext", GlobalModuleInitializesDefaultContext},
+        {"GlobalModuleEvaluatesScripts", GlobalModuleEvaluatesScripts},
+        {"GlobalModuleReconfigureTogglesGpu", GlobalModuleReconfigureTogglesGpu},
         {"TickAndReconfigureUpdatesState", TickAndReconfigureUpdatesState}
     };
 
