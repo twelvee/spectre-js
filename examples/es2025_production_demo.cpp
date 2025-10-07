@@ -6,6 +6,7 @@
 #include <vector>
 #include <algorithm>
 #include <cctype>
+#include <array>
 
 #include "spectre/config.h"
 #include "spectre/runtime.h"
@@ -19,6 +20,8 @@
 #include "spectre/es2025/modules/atomics_module.h"
 #include "spectre/es2025/modules/boolean_module.h"
 #include "spectre/es2025/modules/array_module.h"
+#include "spectre/es2025/modules/iterator_module.h"
+#include "spectre/es2025/modules/generator_module.h"
 #include "spectre/es2025/modules/string_module.h"
 #include "spectre/es2025/modules/math_module.h"
 #include "spectre/es2025/modules/number_module.h"
@@ -26,6 +29,7 @@
 #include "spectre/es2025/modules/date_module.h"
 #include "spectre/es2025/modules/map_module.h"
 #include "spectre/es2025/modules/weak_map_module.h"
+#include "spectre/es2025/value.h"
 
 namespace {
     spectre::StatusCode DemoSumCallback(const std::vector<std::string> &args, std::string &outResult, void *) {
@@ -621,6 +625,191 @@ void DemonstrateWeakMapModule(spectre::es2025::ObjectModule &objectModule,
     objectModule.Destroy(keyB);
 }
 
+void DemonstrateIteratorModule(spectre::es2025::IteratorModule &iteratorModule) {
+    using Value = spectre::es2025::Value;
+    spectre::es2025::IteratorModule::Handle rangeHandle = 0;
+    spectre::es2025::IteratorModule::RangeConfig rangeConfig{0, 6, 1, false};
+    if (iteratorModule.CreateRange(rangeConfig, rangeHandle) == spectre::StatusCode::Ok) {
+        std::array<spectre::es2025::IteratorModule::Result, 12> buffer{};
+        auto produced = iteratorModule.Drain(rangeHandle, buffer);
+        std::cout << "\nIterator range demo (" << produced << ")" << std::endl;
+        for (std::size_t i = 0; i < produced; ++i) {
+            const auto &entry = buffer[i];
+            std::cout << "  value=" << entry.value.ToString() << " done=" << (entry.done ? "true" : "false") << std::endl;
+        }
+        iteratorModule.Destroy(rangeHandle);
+    }
+
+    std::vector<Value> waypoints;
+    waypoints.emplace_back(Value::String("alpha"));
+    waypoints.emplace_back(Value::String("beta"));
+    waypoints.emplace_back(Value::String("gamma"));
+    spectre::es2025::IteratorModule::Handle listHandle = 0;
+    if (iteratorModule.CreateList(std::move(waypoints), listHandle) == spectre::StatusCode::Ok) {
+        std::cout << "Iterator list demo" << std::endl;
+        auto item = iteratorModule.Next(listHandle);
+        while (!item.done) {
+            std::cout << "  item=" << item.value.ToString() << std::endl;
+            item = iteratorModule.Next(listHandle);
+        }
+        iteratorModule.Destroy(listHandle);
+    }
+
+    struct CustomState {
+        double current;
+        double step;
+        int closes;
+        int destroys;
+    } custom{1.0, 0.25, 0, 0};
+
+    auto nextFn = [](void *state) -> spectre::es2025::IteratorModule::Result {
+        auto *ptr = static_cast<CustomState *>(state);
+        spectre::es2025::IteratorModule::Result result;
+        if (ptr == nullptr) {
+            result.done = true;
+            result.hasValue = false;
+            return result;
+        }
+        if (ptr->current > 2.0) {
+            result.done = true;
+            result.hasValue = false;
+            return result;
+        }
+        result.done = false;
+        result.hasValue = true;
+        result.value = spectre::es2025::Value::Number(ptr->current);
+        ptr->current += ptr->step;
+        return result;
+    };
+
+    auto resetFn = [](void *state) {
+        auto *ptr = static_cast<CustomState *>(state);
+        if (ptr == nullptr) {
+            return;
+        }
+        ptr->current = 1.0;
+    };
+
+    auto closeFn = [](void *state) {
+        auto *ptr = static_cast<CustomState *>(state);
+        if (ptr == nullptr) {
+            return;
+        }
+        ptr->closes += 1;
+    };
+
+    auto destroyFn = [](void *state) {
+        auto *ptr = static_cast<CustomState *>(state);
+        if (ptr == nullptr) {
+            return;
+        }
+        ptr->destroys += 1;
+    };
+
+    spectre::es2025::IteratorModule::CustomConfig customConfig{};
+    customConfig.next = nextFn;
+    customConfig.reset = resetFn;
+    customConfig.close = closeFn;
+    customConfig.destroy = destroyFn;
+    customConfig.state = &custom;
+    spectre::es2025::IteratorModule::Handle customHandle = 0;
+    if (iteratorModule.CreateCustom(customConfig, customHandle) == spectre::StatusCode::Ok) {
+        std::cout << "Iterator custom demo" << std::endl;
+        iteratorModule.Reset(customHandle);
+        auto value = iteratorModule.Next(customHandle);
+        while (!value.done) {
+            std::cout << "  value=" << value.value.ToString() << std::endl;
+            value = iteratorModule.Next(customHandle);
+        }
+        iteratorModule.Close(customHandle);
+        iteratorModule.Destroy(customHandle);
+        std::cout << "  closes=" << custom.closes << " destroys=" << custom.destroys << std::endl;
+    }
+}
+
+void DemonstrateGeneratorModule(spectre::es2025::GeneratorModule &generatorModule,
+                                spectre::es2025::IteratorModule &iteratorModule) {
+    struct GeneratorState {
+        int index;
+        int limit;
+        bool finalValue;
+    } state{0, 3, false};
+
+    auto resetFn = [](void *ptr) {
+        auto *statePtr = static_cast<GeneratorState *>(ptr);
+        if (statePtr == nullptr) {
+            return;
+        }
+        statePtr->index = 0;
+        statePtr->finalValue = false;
+    };
+
+    auto stepFn = [](void *ptr, spectre::es2025::GeneratorModule::ExecutionContext &context) {
+        auto *statePtr = static_cast<GeneratorState *>(ptr);
+        if (statePtr == nullptr) {
+            context.done = true;
+            context.hasValue = false;
+            return;
+        }
+        context.requestingInput = false;
+        context.nextResumePoint = 0;
+        if (statePtr->index < statePtr->limit) {
+            context.yieldValue = spectre::es2025::Value::Number(static_cast<double>(statePtr->index));
+            context.hasValue = true;
+            context.done = false;
+            statePtr->index += 1;
+            return;
+        }
+        if (!statePtr->finalValue) {
+            context.yieldValue = spectre::es2025::Value::String("generator-final");
+            context.hasValue = true;
+            context.done = true;
+            statePtr->finalValue = true;
+            return;
+        }
+        context.done = true;
+        context.hasValue = false;
+    };
+
+    spectre::es2025::GeneratorModule::Descriptor descriptor{};
+    descriptor.stepper = stepFn;
+    descriptor.state = &state;
+    descriptor.reset = resetFn;
+    descriptor.destroy = nullptr;
+    descriptor.name = "generator-demo";
+    descriptor.resumePoint = 0;
+
+    spectre::es2025::GeneratorModule::Handle handle = 0;
+    if (generatorModule.Register(descriptor, handle) != spectre::StatusCode::Ok) {
+        std::cout << "\nGenerator demo unavailable" << std::endl;
+        return;
+    }
+
+    std::cout << "\nGenerator resume demo" << std::endl;
+    auto step = generatorModule.Resume(handle);
+    while (!step.done || step.hasValue) {
+        std::cout << "  value=" << step.value.ToString() << " done=" << (step.done ? "true" : "false") << std::endl;
+        if (step.done) {
+            break;
+        }
+        step = generatorModule.Resume(handle);
+    }
+
+    generatorModule.Reset(handle);
+    std::uint32_t iteratorHandle = 0;
+    if (generatorModule.CreateIteratorBridge(handle, iteratorModule, iteratorHandle) == spectre::StatusCode::Ok) {
+        std::array<spectre::es2025::IteratorModule::Result, 8> bridge{};
+        auto produced = iteratorModule.Drain(iteratorHandle, bridge);
+        std::cout << "Generator bridge demo" << std::endl;
+        for (std::size_t i = 0; i < produced; ++i) {
+            const auto &entry = bridge[i];
+            std::cout << "  bridge=" << entry.value.ToString() << " done=" << (entry.done ? "true" : "false") << std::endl;
+        }
+        iteratorModule.Destroy(iteratorHandle);
+    }
+
+    generatorModule.Destroy(handle);
+}
 int main() {
     using namespace spectre;
 
@@ -682,6 +871,20 @@ int main() {
     auto *functionModule = dynamic_cast<es2025::FunctionModule *>(functionModulePtr);
     if (!functionModule) {
         std::cerr << "Function module unavailable" << std::endl;
+        return 1;
+    }
+
+    auto *iteratorModulePtr = environment.FindModule("Iterator");
+    auto *iteratorModule = dynamic_cast<es2025::IteratorModule *>(iteratorModulePtr);
+    if (!iteratorModule) {
+        std::cerr << "Iterator module unavailable" << std::endl;
+        return 1;
+    }
+
+    auto *generatorModulePtr = environment.FindModule("Generator");
+    auto *generatorModule = dynamic_cast<es2025::GeneratorModule *>(generatorModulePtr);
+    if (!generatorModule) {
+        std::cerr << "Generator module unavailable" << std::endl;
         return 1;
     }
 
@@ -759,6 +962,8 @@ int main() {
 
     EvaluateSampleScripts(*globalModule);
 
+    DemonstrateIteratorModule(*iteratorModule);
+    DemonstrateGeneratorModule(*generatorModule, *iteratorModule);
     DemonstrateArrayModule(*arrayModule);
     DemonstrateAtomicsModule(*atomicsModule);
     DemonstrateBooleanModule(*booleanModule);
@@ -811,3 +1016,4 @@ int main() {
     std::cout << "\nES2025 production scaffold ready" << std::endl;
     return 0;
 }
+

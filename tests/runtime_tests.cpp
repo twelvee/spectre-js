@@ -2,6 +2,7 @@
 #include <limits>
 #include <string>
 #include <algorithm>
+#include <array>
 #include <vector>
 #include <cmath>
 
@@ -21,11 +22,13 @@
 #include "spectre/es2025/modules/atomics_module.h"
 #include "spectre/es2025/modules/boolean_module.h"
 #include "spectre/es2025/modules/array_module.h"
-#include "spectre/es2025/modules/string_module.h"
+#include "spectre/es2025/modules/iterator_module.h"
+#include "spectre/es2025/modules/generator_module.h"
 #include "spectre/es2025/modules/math_module.h"
 #include "spectre/es2025/modules/number_module.h"
 #include "spectre/es2025/modules/bigint_module.h"
 #include "spectre/es2025/modules/date_module.h"
+#include "spectre/es2025/modules/string_module.h"
 
 namespace {
     using spectre::RuntimeConfig;
@@ -663,6 +666,242 @@ namespace {
         ok &= ExpectStatus(status, StatusCode::Ok, "Runtime reconfigure");
         environment.OptimizeGpu(true);
         ok &= ExpectTrue(functionModule->GpuEnabled(), "GPU enabled");
+        return ok;
+    }
+
+
+    bool IteratorModuleHandlesRangeListAndCustom() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        bool ok = ExpectTrue(runtime != nullptr, "Runtime created");
+        if (!runtime) {
+            return false;
+        }
+        auto &environment = runtime->EsEnvironment();
+        auto *iteratorModule = dynamic_cast<spectre::es2025::IteratorModule *>(environment.FindModule("Iterator"));
+        ok &= ExpectTrue(iteratorModule != nullptr, "Iterator module available");
+        if (!iteratorModule) {
+            return false;
+        }
+
+        spectre::es2025::IteratorModule::Handle rangeHandle = 0;
+        spectre::es2025::IteratorModule::RangeConfig rangeConfig{0, 5, 1, false};
+        ok &= ExpectStatus(iteratorModule->CreateRange(rangeConfig, rangeHandle), StatusCode::Ok, "Create range iterator");
+        std::array<spectre::es2025::IteratorModule::Result, 8> rangeBuffer{};
+        auto produced = iteratorModule->Drain(rangeHandle, rangeBuffer);
+        ok &= ExpectTrue(produced == 6, "Range drain produced values plus sentinel");
+        for (std::size_t i = 0; i < 5 && i < produced; ++i) {
+            ok &= ExpectTrue(rangeBuffer[i].hasValue, "Range produced value");
+            ok &= ExpectTrue(!rangeBuffer[i].done, "Range entry not done");
+            ok &= ExpectTrue(rangeBuffer[i].value.AsNumber(-1.0) == static_cast<double>(i), "Range sequence");
+        }
+        ok &= ExpectTrue(rangeBuffer[produced - 1].done, "Range sentinel done");
+        ok &= ExpectTrue(!rangeBuffer[produced - 1].hasValue, "Range sentinel empty");
+        ok &= ExpectTrue(iteratorModule->Destroy(rangeHandle), "Destroy range iterator");
+
+        std::vector<spectre::es2025::Value> names;
+        names.emplace_back(spectre::es2025::Value::String("alpha"));
+        names.emplace_back(spectre::es2025::Value::String("beta"));
+        names.emplace_back(spectre::es2025::Value::String("gamma"));
+        spectre::es2025::IteratorModule::Handle listHandle = 0;
+        ok &= ExpectStatus(iteratorModule->CreateList(names, listHandle), StatusCode::Ok, "Create list iterator");
+        std::array<std::string, 3> expectedNames{"alpha", "beta", "gamma"};
+        std::size_t listIndex = 0;
+        auto listEntry = iteratorModule->Next(listHandle);
+        while (!listEntry.done) {
+            ok &= ExpectTrue(listIndex < expectedNames.size(), "List bounds");
+            ok &= ExpectTrue(listEntry.hasValue, "List entry has value");
+            if (listIndex < expectedNames.size()) {
+                ok &= ExpectTrue(listEntry.value.AsString() == expectedNames[listIndex], "List preserves order");
+            }
+            listEntry = iteratorModule->Next(listHandle);
+            ++listIndex;
+        }
+        ok &= ExpectTrue(listIndex == expectedNames.size(), "Consumed all list values");
+        ok &= ExpectTrue(iteratorModule->Destroy(listHandle), "Destroy list iterator");
+
+        struct CustomState {
+            double current;
+            double step;
+            int resets;
+            int closes;
+            int destroys;
+        } custom{0.0, 0.5, 0, 0, 0};
+
+        auto nextFn = [](void *state) -> spectre::es2025::IteratorModule::Result {
+            auto *ptr = static_cast<CustomState *>(state);
+            spectre::es2025::IteratorModule::Result result;
+            if (ptr == nullptr) {
+                result.done = true;
+                result.hasValue = false;
+                return result;
+            }
+            if (ptr->current >= 1.5) {
+                result.done = true;
+                result.hasValue = false;
+                return result;
+            }
+            result.done = false;
+            result.hasValue = true;
+            result.value = spectre::es2025::Value::Number(ptr->current);
+            ptr->current += ptr->step;
+            return result;
+        };
+
+        auto resetFn = [](void *state) {
+            auto *ptr = static_cast<CustomState *>(state);
+            if (ptr == nullptr) {
+                return;
+            }
+            ptr->current = 0.0;
+            ptr->resets += 1;
+        };
+
+        auto closeFn = [](void *state) {
+            auto *ptr = static_cast<CustomState *>(state);
+            if (ptr == nullptr) {
+                return;
+            }
+            ptr->closes += 1;
+        };
+
+        auto destroyFn = [](void *state) {
+            auto *ptr = static_cast<CustomState *>(state);
+            if (ptr == nullptr) {
+                return;
+            }
+            ptr->destroys += 1;
+        };
+
+        spectre::es2025::IteratorModule::CustomConfig customConfig{};
+        customConfig.next = nextFn;
+        customConfig.reset = resetFn;
+        customConfig.close = closeFn;
+        customConfig.destroy = destroyFn;
+        customConfig.state = &custom;
+
+        spectre::es2025::IteratorModule::Handle customHandle = 0;
+        ok &= ExpectStatus(iteratorModule->CreateCustom(customConfig, customHandle), StatusCode::Ok, "Create custom iterator");
+        iteratorModule->Reset(customHandle);
+        auto customEntry = iteratorModule->Next(customHandle);
+        int customCount = 0;
+        while (!customEntry.done) {
+            ok &= ExpectTrue(customEntry.hasValue, "Custom iterator yields value");
+            customEntry = iteratorModule->Next(customHandle);
+            customCount += 1;
+        }
+        iteratorModule->Close(customHandle);
+        iteratorModule->Destroy(customHandle);
+        ok &= ExpectTrue(custom.resets == 1, "Custom reset invoked");
+        ok &= ExpectTrue(custom.closes == 1, "Custom close invoked");
+        ok &= ExpectTrue(custom.destroys == 1, "Custom destroy invoked");
+        ok &= ExpectTrue(customCount > 0, "Custom produced values");
+        ok &= ExpectTrue(iteratorModule->ActiveIterators() == 0, "Iterators released");
+        return ok;
+    }
+
+    bool GeneratorModuleRunsAndBridges() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        bool ok = ExpectTrue(runtime != nullptr, "Runtime created");
+        if (!runtime) {
+            return false;
+        }
+        auto &environment = runtime->EsEnvironment();
+        auto *generatorModule = dynamic_cast<spectre::es2025::GeneratorModule *>(environment.FindModule("Generator"));
+        ok &= ExpectTrue(generatorModule != nullptr, "Generator module available");
+        auto *iteratorModule = dynamic_cast<spectre::es2025::IteratorModule *>(environment.FindModule("Iterator"));
+        ok &= ExpectTrue(iteratorModule != nullptr, "Iterator module available");
+        if (!generatorModule || !iteratorModule) {
+            return false;
+        }
+
+        struct GeneratorState {
+            std::size_t index;
+            std::array<spectre::es2025::Value, 3> values;
+        } state{0, {spectre::es2025::Value::Number(1.0), spectre::es2025::Value::Number(2.0), spectre::es2025::Value::String("done")}};
+
+        auto resetFn = [](void *raw) {
+            auto *ptr = static_cast<GeneratorState *>(raw);
+            if (ptr == nullptr) {
+                return;
+            }
+            ptr->index = 0;
+        };
+
+        auto stepFn = [](void *raw, spectre::es2025::GeneratorModule::ExecutionContext &context) {
+            auto *ptr = static_cast<GeneratorState *>(raw);
+            if (ptr == nullptr) {
+                context.done = true;
+                context.hasValue = false;
+                return;
+            }
+            context.requestingInput = false;
+            context.nextResumePoint = 0;
+            if (ptr->index < ptr->values.size() - 1) {
+                context.yieldValue = ptr->values[ptr->index];
+                context.hasValue = true;
+                context.done = false;
+                ptr->index += 1;
+                return;
+            }
+            if (ptr->index == ptr->values.size() - 1) {
+                context.yieldValue = ptr->values[ptr->index];
+                context.hasValue = true;
+                context.done = true;
+                ptr->index += 1;
+                return;
+            }
+            context.done = true;
+            context.hasValue = false;
+        };
+
+        spectre::es2025::GeneratorModule::Descriptor descriptor{};
+        descriptor.stepper = stepFn;
+        descriptor.state = &state;
+        descriptor.reset = resetFn;
+        descriptor.destroy = nullptr;
+        descriptor.name = "runtime-generator";
+        descriptor.resumePoint = 0;
+
+        spectre::es2025::GeneratorModule::Handle handle = 0;
+        ok &= ExpectStatus(generatorModule->Register(descriptor, handle), StatusCode::Ok, "Register generator");
+        auto first = generatorModule->Resume(handle);
+        ok &= ExpectTrue(first.hasValue, "First resume has value");
+        ok &= ExpectTrue(!first.done, "First resume not done");
+        ok &= ExpectTrue(first.value == state.values[0], "First value matches");
+        auto second = generatorModule->Resume(handle);
+        ok &= ExpectTrue(second.hasValue, "Second resume has value");
+        ok &= ExpectTrue(!second.done, "Second resume not done");
+        ok &= ExpectTrue(second.value == state.values[1], "Second value matches");
+        auto final = generatorModule->Resume(handle);
+        ok &= ExpectTrue(final.hasValue, "Final resume has value");
+        ok &= ExpectTrue(final.done, "Final resume done");
+        ok &= ExpectTrue(final.value == state.values[2], "Final value matches");
+        auto exhausted = generatorModule->Resume(handle);
+        ok &= ExpectTrue(exhausted.done, "Exhausted resume done");
+        ok &= ExpectTrue(!exhausted.hasValue, "Exhausted resume empty");
+        ok &= ExpectTrue(generatorModule->Completed(handle), "Generator reports completed");
+        ok &= ExpectTrue(generatorModule->ResumeCount(handle) == 3, "Resume count tracked");
+
+        generatorModule->Reset(handle);
+        auto resetStep = generatorModule->Resume(handle);
+        ok &= ExpectTrue(resetStep.hasValue, "Reset resume has value");
+        ok &= ExpectTrue(resetStep.value == state.values[0], "Reset start value");
+        generatorModule->Reset(handle);
+
+        std::uint32_t iteratorHandle = 0;
+        ok &= ExpectStatus(generatorModule->CreateIteratorBridge(handle, *iteratorModule, iteratorHandle), StatusCode::Ok, "Create iterator bridge");
+        std::array<spectre::es2025::IteratorModule::Result, 8> bridgeBuffer{};
+        auto bridgeProduced = iteratorModule->Drain(iteratorHandle, bridgeBuffer);
+        ok &= ExpectTrue(bridgeProduced == 3, "Bridge produced generator values");
+        ok &= ExpectTrue(bridgeBuffer[0].value == state.values[0], "Bridge first value");
+        ok &= ExpectTrue(!bridgeBuffer[0].done, "Bridge first not done");
+        ok &= ExpectTrue(bridgeBuffer[1].value == state.values[1], "Bridge second value");
+        ok &= ExpectTrue(!bridgeBuffer[1].done, "Bridge second not done");
+        ok &= ExpectTrue(bridgeBuffer[2].value == state.values[2], "Bridge final value");
+        ok &= ExpectTrue(bridgeBuffer[2].done, "Bridge final done");
+        ok &= ExpectTrue(iteratorModule->Destroy(iteratorHandle), "Destroy bridge iterator");
+        ok &= ExpectTrue(generatorModule->Destroy(handle), "Destroy generator");
+        ok &= ExpectTrue(generatorModule->ActiveGenerators() == 0, "All generators released");
         return ok;
     }
 
@@ -1484,6 +1723,8 @@ int main() {
         {"FunctionModuleRegistersAndInvokes", FunctionModuleRegistersAndInvokes},
         {"FunctionModuleHandlesDuplicatesAndRemoval", FunctionModuleHandlesDuplicatesAndRemoval},
         {"FunctionModuleGpuToggle", FunctionModuleGpuToggle},
+        {"IteratorModuleHandlesRangeListAndCustom", IteratorModuleHandlesRangeListAndCustom},
+        {"GeneratorModuleRunsAndBridges", GeneratorModuleRunsAndBridges},
         {"ArrayModuleCreatesDenseAndTracksMetrics", ArrayModuleCreatesDenseAndTracksMetrics},
         {"ArrayModuleSupportsSparseConversions", ArrayModuleSupportsSparseConversions},
         {"ArrayModuleConcatSliceAndBinarySearch", ArrayModuleConcatSliceAndBinarySearch},
@@ -1518,3 +1759,4 @@ int main() {
     std::cout << "Executed " << passed << " / " << tests.size() << " tests" << std::endl;
     return 0;
 }
+
