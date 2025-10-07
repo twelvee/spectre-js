@@ -11,6 +11,7 @@
 #include "spectre/es2025/modules/global_module.h"
 #include "spectre/es2025/modules/error_module.h"
 #include "spectre/es2025/modules/function_module.h"
+#include "spectre/es2025/modules/array_module.h"
 
 namespace {
     using spectre::RuntimeConfig;
@@ -651,6 +652,149 @@ namespace {
         return ok;
     }
 
+    bool ArrayModuleCreatesDenseAndTracksMetrics() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        bool ok = ExpectTrue(runtime != nullptr, "Runtime created");
+        if (!runtime) {
+            return false;
+        }
+        auto &environment = runtime->EsEnvironment();
+        auto *arrayModule = dynamic_cast<spectre::es2025::ArrayModule *>(environment.FindModule("Array"));
+        ok &= ExpectTrue(arrayModule != nullptr, "Array module available");
+        if (!arrayModule) {
+            return false;
+        }
+        spectre::es2025::ArrayModule::Handle handle = 0;
+        auto status = arrayModule->CreateDense("dense-primary", 8, handle);
+        ok &= ExpectStatus(status, StatusCode::Ok, "Create dense array");
+        ok &= ExpectTrue(handle != 0, "Handle assigned");
+        status = arrayModule->PushNumber(handle, 42.0);
+        ok &= ExpectStatus(status, StatusCode::Ok, "Push number");
+        status = arrayModule->PushString(handle, "alpha");
+        ok &= ExpectStatus(status, StatusCode::Ok, "Push string");
+        spectre::es2025::ArrayModule::Value value;
+        status = arrayModule->Get(handle, 0, value);
+        ok &= ExpectStatus(status, StatusCode::Ok, "Get first element");
+        ok &= ExpectTrue(value.kind == spectre::es2025::ArrayModule::Value::Kind::Number, "Value kind number");
+        status = arrayModule->Get(handle, 1, value);
+        ok &= ExpectStatus(status, StatusCode::Ok, "Get second element");
+        ok &= ExpectTrue(value.kind == spectre::es2025::ArrayModule::Value::Kind::String, "Value kind string");
+        ok &= ExpectTrue(arrayModule->Length(handle) == 2, "Length two");
+        const auto &metrics = arrayModule->GetMetrics();
+        ok &= ExpectTrue(metrics.denseCount >= 1, "Dense count tracked");
+        ok &= ExpectTrue(metrics.denseLength >= 2, "Dense length tracked");
+        return ok;
+    }
+
+    bool ArrayModuleSupportsSparseConversions() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        bool ok = ExpectTrue(runtime != nullptr, "Runtime created");
+        if (!runtime) {
+            return false;
+        }
+        auto &environment = runtime->EsEnvironment();
+        auto *arrayModule = dynamic_cast<spectre::es2025::ArrayModule *>(environment.FindModule("Array"));
+        ok &= ExpectTrue(arrayModule != nullptr, "Array module available");
+        if (!arrayModule) {
+            return false;
+        }
+        spectre::es2025::ArrayModule::Handle handle = 0;
+        auto status = arrayModule->CreateDense("dense-to-sparse", 4, handle);
+        ok &= ExpectStatus(status, StatusCode::Ok, "Create dense");
+        status = arrayModule->Set(handle, 0, spectre::es2025::ArrayModule::Value(10.0));
+        ok &= ExpectStatus(status, StatusCode::Ok, "Set base value");
+        status = arrayModule->Set(handle, 64, spectre::es2025::ArrayModule::Value("tail"));
+        ok &= ExpectStatus(status, StatusCode::Ok, "Set sparse index");
+        ok &= ExpectTrue(arrayModule->KindOf(handle) == spectre::es2025::ArrayModule::StorageKind::Sparse, "Converted to sparse");
+        spectre::es2025::ArrayModule::Value sparseValue;
+        ok &= ExpectTrue(arrayModule->Length(handle) >= 65, "Sparse length expanded");
+        status = arrayModule->SortLexicographic(handle, true);
+        ok &= ExpectStatus(status, StatusCode::Ok, "Sort lexicographic");
+        ok &= ExpectTrue(arrayModule->KindOf(handle) == spectre::es2025::ArrayModule::StorageKind::Dense, "Promoted to dense");
+        const auto &metrics = arrayModule->GetMetrics();
+        ok &= ExpectTrue(metrics.transitionsToSparse >= 1, "Sparse transition counted");
+        ok &= ExpectTrue(metrics.transitionsToDense >= 1, "Dense transition counted");
+        return ok;
+    }
+
+    bool ArrayModuleConcatSliceAndBinarySearch() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        bool ok = ExpectTrue(runtime != nullptr, "Runtime created");
+        if (!runtime) {
+            return false;
+        }
+        auto &environment = runtime->EsEnvironment();
+        auto *arrayModule = dynamic_cast<spectre::es2025::ArrayModule *>(environment.FindModule("Array"));
+        ok &= ExpectTrue(arrayModule != nullptr, "Array module available");
+        if (!arrayModule) {
+            return false;
+        }
+        spectre::es2025::ArrayModule::Handle a = 0;
+        spectre::es2025::ArrayModule::Handle b = 0;
+        ok &= ExpectStatus(arrayModule->CreateDense("concat-a", 4, a), StatusCode::Ok, "Create first array");
+        ok &= ExpectStatus(arrayModule->CreateDense("concat-b", 4, b), StatusCode::Ok, "Create second array");
+        ok &= ExpectStatus(arrayModule->PushNumber(a, 3.0), StatusCode::Ok, "Push into a");
+        ok &= ExpectStatus(arrayModule->PushNumber(a, 1.0), StatusCode::Ok, "Push into a");
+        ok &= ExpectStatus(arrayModule->PushNumber(a, 5.0), StatusCode::Ok, "Push into a");
+        ok &= ExpectStatus(arrayModule->PushNumber(b, 4.0), StatusCode::Ok, "Push into b");
+        ok &= ExpectStatus(arrayModule->PushNumber(b, 2.0), StatusCode::Ok, "Push into b");
+        ok &= ExpectStatus(arrayModule->Concat(a, b), StatusCode::Ok, "Concat arrays");
+        ok &= ExpectTrue(arrayModule->Length(a) == 5, "Concat length");
+        std::vector<spectre::es2025::ArrayModule::Value> slice;
+        ok &= ExpectStatus(arrayModule->Slice(a, 1, 4, slice), StatusCode::Ok, "Slice values");
+        ok &= ExpectTrue(slice.size() == 3, "Slice size");
+        ok &= ExpectStatus(arrayModule->SortNumeric(a, true), StatusCode::Ok, "Sort numeric");
+        std::size_t index = 0;
+        ok &= ExpectStatus(arrayModule->BinarySearch(a, spectre::es2025::ArrayModule::Value(4.0), true, index), StatusCode::Ok, "Binary search value");
+        ok &= ExpectTrue(index < arrayModule->Length(a), "Binary search index range");
+        return ok;
+    }
+
+    bool ArrayModuleCloneAndClear() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        bool ok = ExpectTrue(runtime != nullptr, "Runtime created");
+        if (!runtime) {
+            return false;
+        }
+        auto &environment = runtime->EsEnvironment();
+        auto *arrayModule = dynamic_cast<spectre::es2025::ArrayModule *>(environment.FindModule("Array"));
+        ok &= ExpectTrue(arrayModule != nullptr, "Array module available");
+        if (!arrayModule) {
+            return false;
+        }
+        spectre::es2025::ArrayModule::Handle original = 0;
+        ok &= ExpectStatus(arrayModule->CreateDense("clone-source", 4, original), StatusCode::Ok, "Create source");
+        ok &= ExpectStatus(arrayModule->PushNumber(original, 7.0), StatusCode::Ok, "Push number");
+        ok &= ExpectStatus(arrayModule->PushString(original, "node"), StatusCode::Ok, "Push string");
+        ok &= ExpectTrue(arrayModule->Length(original) == 2, "Source length established");
+        ok &= ExpectTrue(arrayModule->KindOf(original) == spectre::es2025::ArrayModule::StorageKind::Dense, "Source dense kind");
+        spectre::es2025::ArrayModule::Handle clone = 0;
+        ok &= ExpectStatus(arrayModule->Clone(original, "clone-copy", clone), StatusCode::Ok, "Clone array");
+        ok &= ExpectTrue(clone != 0, "Clone handle assigned");
+        ok &= ExpectTrue(arrayModule->Has(clone), "Clone registered");
+        ok &= ExpectTrue(arrayModule->KindOf(clone) == spectre::es2025::ArrayModule::StorageKind::Dense, "Clone dense kind");
+        ok &= ExpectTrue(arrayModule->Length(clone) == arrayModule->Length(original), "Clone length");
+        spectre::es2025::ArrayModule::Value value;
+        std::vector<spectre::es2025::ArrayModule::Value> cloneSlice;
+        ok &= ExpectStatus(arrayModule->Slice(clone, 0, arrayModule->Length(original), cloneSlice), StatusCode::Ok, "Clone slice status");
+        ok &= ExpectTrue(cloneSlice.size() == arrayModule->Length(original), "Clone slice size");
+        bool cloneHasPayload = false;
+        for (const auto &entry : cloneSlice) {
+            if (entry.ToString() == "node") {
+                cloneHasPayload = true;
+                break;
+            }
+        }
+        ok &= ExpectTrue(cloneHasPayload, "Clone payload copied");
+        ok &= ExpectStatus(arrayModule->Get(clone, 1, value), StatusCode::Ok, "Clone element");
+        ok &= ExpectTrue(value.kind == spectre::es2025::ArrayModule::Value::Kind::String, "Clone value kind");
+        ok &= ExpectStatus(arrayModule->Clear(original), StatusCode::Ok, "Clear source");
+        ok &= ExpectTrue(arrayModule->Length(original) == 0, "Source cleared");
+        const auto &metrics = arrayModule->GetMetrics();
+        ok &= ExpectTrue(metrics.clones >= 1, "Clone metric updated");
+        return ok;
+    }
+
     struct TestCase {
         const char *name;
 
@@ -681,6 +825,10 @@ int main() {
         {"FunctionModuleRegistersAndInvokes", FunctionModuleRegistersAndInvokes},
         {"FunctionModuleHandlesDuplicatesAndRemoval", FunctionModuleHandlesDuplicatesAndRemoval},
         {"FunctionModuleGpuToggle", FunctionModuleGpuToggle},
+        {"ArrayModuleCreatesDenseAndTracksMetrics", ArrayModuleCreatesDenseAndTracksMetrics},
+        {"ArrayModuleSupportsSparseConversions", ArrayModuleSupportsSparseConversions},
+        {"ArrayModuleConcatSliceAndBinarySearch", ArrayModuleConcatSliceAndBinarySearch},
+        {"ArrayModuleCloneAndClear", ArrayModuleCloneAndClear},
         {"TickAndReconfigureUpdatesState", TickAndReconfigureUpdatesState}
     };
 

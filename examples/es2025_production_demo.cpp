@@ -14,6 +14,7 @@
 #include "spectre/es2025/modules/global_module.h"
 #include "spectre/es2025/modules/error_module.h"
 #include "spectre/es2025/modules/function_module.h"
+#include "spectre/es2025/modules/array_module.h"
 
 namespace {
     spectre::StatusCode DemoSumCallback(const std::vector<std::string> &args, std::string &outResult, void *) {
@@ -108,6 +109,50 @@ namespace {
             runtime.Tick(tick);
         }
     }
+
+    void DemonstrateArrayModule(spectre::es2025::ArrayModule &arrayModule) {
+        using Value = spectre::es2025::ArrayModule::Value;
+        spectre::es2025::ArrayModule::Handle metricsHandle = 0;
+        if (arrayModule.CreateDense("demo.metrics", 8, metricsHandle) != spectre::StatusCode::Ok) {
+            std::cout << "Array module demo unavailable" << std::endl;
+            return;
+        }
+        arrayModule.PushNumber(metricsHandle, 18.0);
+        arrayModule.PushNumber(metricsHandle, 7.0);
+        arrayModule.PushNumber(metricsHandle, 32.0);
+        arrayModule.PushNumber(metricsHandle, 12.0);
+        arrayModule.SortNumeric(metricsHandle, true);
+        std::vector<Value> metricValues;
+        arrayModule.Slice(metricsHandle, 0, arrayModule.Length(metricsHandle), metricValues);
+        std::cout << "\nArray metrics" << std::endl;
+        for (std::size_t i = 0; i < metricValues.size(); ++i) {
+            std::cout << "  metrics[" << i << "] = " << metricValues[i].ToString() << std::endl;
+        }
+        std::size_t foundIndex = 0;
+        if (arrayModule.BinarySearch(metricsHandle, Value(12.0), true, foundIndex) == spectre::StatusCode::Ok) {
+            std::cout << "  search 12 => index " << foundIndex << std::endl;
+        }
+
+        spectre::es2025::ArrayModule::Handle traceHandle = 0;
+        if (arrayModule.CreateDense("demo.trace", 2, traceHandle) != spectre::StatusCode::Ok) {
+            return;
+        }
+        arrayModule.Set(traceHandle, 0, Value("frame-0"));
+        arrayModule.Set(traceHandle, 9, Value("frame-9"));
+        arrayModule.PushString(traceHandle, "frame-10");
+        arrayModule.SortLexicographic(traceHandle, true);
+        std::vector<Value> traceValues;
+        arrayModule.Slice(traceHandle, 0, arrayModule.Length(traceHandle), traceValues);
+        std::cout << "Trace labels" << std::endl;
+        for (std::size_t i = 0; i < traceValues.size(); ++i) {
+            std::cout << "  trace[" << i << "] = " << traceValues[i].ToString() << std::endl;
+        }
+        const auto &metrics = arrayModule.GetMetrics();
+        std::cout << "Array metrics summary: dense=" << metrics.denseCount
+                  << " sparse=" << metrics.sparseCount
+                  << " d2s=" << metrics.transitionsToSparse
+                  << " s2d=" << metrics.transitionsToDense << std::endl;
+    }
 }
 
 int main() {
@@ -146,6 +191,13 @@ int main() {
         return 1;
     }
 
+    auto *arrayModulePtr = environment.FindModule("Array");
+    auto *arrayModule = dynamic_cast<es2025::ArrayModule *>(arrayModulePtr);
+    if (!arrayModule) {
+        std::cerr << "Array module unavailable" << std::endl;
+        return 1;
+    }
+
     functionModule->RegisterHostFunction("demo.sum", DemoSumCallback);
     functionModule->RegisterHostFunction("demo.upper", DemoUpperCallback);
 
@@ -163,6 +215,8 @@ int main() {
     }
 
     EvaluateSampleScripts(*globalModule);
+
+    DemonstrateArrayModule(*arrayModule);
 
     std::cout << "\nDemonstrating error capture" << std::endl;
     std::string failingValue;
