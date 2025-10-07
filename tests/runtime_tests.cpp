@@ -1,6 +1,8 @@
 #include <iostream>
+#include <limits>
 #include <string>
 #include <vector>
+#include <cmath>
 
 #include "spectre/config.h"
 #include "spectre/context.h"
@@ -14,6 +16,10 @@
 #include "spectre/es2025/modules/atomics_module.h"
 #include "spectre/es2025/modules/boolean_module.h"
 #include "spectre/es2025/modules/array_module.h"
+#include "spectre/es2025/modules/string_module.h"
+#include "spectre/es2025/modules/math_module.h"
+#include "spectre/es2025/modules/number_module.h"
+#include "spectre/es2025/modules/bigint_module.h"
 
 namespace {
     using spectre::RuntimeConfig;
@@ -707,12 +713,14 @@ namespace {
         ok &= ExpectStatus(status, StatusCode::Ok, "Set base value");
         status = arrayModule->Set(handle, 64, spectre::es2025::ArrayModule::Value("tail"));
         ok &= ExpectStatus(status, StatusCode::Ok, "Set sparse index");
-        ok &= ExpectTrue(arrayModule->KindOf(handle) == spectre::es2025::ArrayModule::StorageKind::Sparse, "Converted to sparse");
+        ok &= ExpectTrue(arrayModule->KindOf(handle) == spectre::es2025::ArrayModule::StorageKind::Sparse,
+                         "Converted to sparse");
         spectre::es2025::ArrayModule::Value sparseValue;
         ok &= ExpectTrue(arrayModule->Length(handle) >= 65, "Sparse length expanded");
         status = arrayModule->SortLexicographic(handle, true);
         ok &= ExpectStatus(status, StatusCode::Ok, "Sort lexicographic");
-        ok &= ExpectTrue(arrayModule->KindOf(handle) == spectre::es2025::ArrayModule::StorageKind::Dense, "Promoted to dense");
+        ok &= ExpectTrue(arrayModule->KindOf(handle) == spectre::es2025::ArrayModule::StorageKind::Dense,
+                         "Promoted to dense");
         const auto &metrics = arrayModule->GetMetrics();
         ok &= ExpectTrue(metrics.transitionsToSparse >= 1, "Sparse transition counted");
         ok &= ExpectTrue(metrics.transitionsToDense >= 1, "Dense transition counted");
@@ -747,7 +755,8 @@ namespace {
         ok &= ExpectTrue(slice.size() == 3, "Slice size");
         ok &= ExpectStatus(arrayModule->SortNumeric(a, true), StatusCode::Ok, "Sort numeric");
         std::size_t index = 0;
-        ok &= ExpectStatus(arrayModule->BinarySearch(a, spectre::es2025::ArrayModule::Value(4.0), true, index), StatusCode::Ok, "Binary search value");
+        ok &= ExpectStatus(arrayModule->BinarySearch(a, spectre::es2025::ArrayModule::Value(4.0), true, index),
+                           StatusCode::Ok, "Binary search value");
         ok &= ExpectTrue(index < arrayModule->Length(a), "Binary search index range");
         return ok;
     }
@@ -769,19 +778,22 @@ namespace {
         ok &= ExpectStatus(arrayModule->PushNumber(original, 7.0), StatusCode::Ok, "Push number");
         ok &= ExpectStatus(arrayModule->PushString(original, "node"), StatusCode::Ok, "Push string");
         ok &= ExpectTrue(arrayModule->Length(original) == 2, "Source length established");
-        ok &= ExpectTrue(arrayModule->KindOf(original) == spectre::es2025::ArrayModule::StorageKind::Dense, "Source dense kind");
+        ok &= ExpectTrue(arrayModule->KindOf(original) == spectre::es2025::ArrayModule::StorageKind::Dense,
+                         "Source dense kind");
         spectre::es2025::ArrayModule::Handle clone = 0;
         ok &= ExpectStatus(arrayModule->Clone(original, "clone-copy", clone), StatusCode::Ok, "Clone array");
         ok &= ExpectTrue(clone != 0, "Clone handle assigned");
         ok &= ExpectTrue(arrayModule->Has(clone), "Clone registered");
-        ok &= ExpectTrue(arrayModule->KindOf(clone) == spectre::es2025::ArrayModule::StorageKind::Dense, "Clone dense kind");
+        ok &= ExpectTrue(arrayModule->KindOf(clone) == spectre::es2025::ArrayModule::StorageKind::Dense,
+                         "Clone dense kind");
         ok &= ExpectTrue(arrayModule->Length(clone) == arrayModule->Length(original), "Clone length");
         spectre::es2025::ArrayModule::Value value;
         std::vector<spectre::es2025::ArrayModule::Value> cloneSlice;
-        ok &= ExpectStatus(arrayModule->Slice(clone, 0, arrayModule->Length(original), cloneSlice), StatusCode::Ok, "Clone slice status");
+        ok &= ExpectStatus(arrayModule->Slice(clone, 0, arrayModule->Length(original), cloneSlice), StatusCode::Ok,
+                           "Clone slice status");
         ok &= ExpectTrue(cloneSlice.size() == arrayModule->Length(original), "Clone slice size");
         bool cloneHasPayload = false;
-        for (const auto &entry : cloneSlice) {
+        for (const auto &entry: cloneSlice) {
             if (entry.ToString() == "node") {
                 cloneHasPayload = true;
                 break;
@@ -811,10 +823,10 @@ namespace {
         ok &= ExpectTrue(atomicsModule->Capacity(handle) == 8, "Capacity matches request");
         ok &= ExpectStatus(atomicsModule->Fill(handle, 1), StatusCode::Ok, "Fill baseline");
         ok &= ExpectStatus(atomicsModule->Store(handle, 3, 42, spectre::es2025::AtomicsModule::MemoryOrder::Release),
-                          StatusCode::Ok, "Store lane");
+                           StatusCode::Ok, "Store lane");
         std::int64_t value = 0;
         ok &= ExpectStatus(atomicsModule->Load(handle, 3, value, spectre::es2025::AtomicsModule::MemoryOrder::Acquire),
-                          StatusCode::Ok, "Load lane");
+                           StatusCode::Ok, "Load lane");
         ok &= ExpectTrue(value == 42, "Load observed store");
         std::int64_t previous = 0;
         ok &= ExpectStatus(atomicsModule->Add(handle, 3, 5, previous), StatusCode::Ok, "Fetch add");
@@ -881,7 +893,271 @@ namespace {
         ok &= ExpectTrue(metrics.canonicalHits >= 2, "Canonical hits tracked");
         ok &= ExpectStatus(booleanModule->Destroy(handle), StatusCode::Ok, "Destroy boxed flag");
         ok &= ExpectTrue(!booleanModule->Has(handle), "Box removed from cache");
-        ok &= ExpectStatus(booleanModule->Destroy(canonicalTrue), StatusCode::InvalidArgument, "Canonical box protected");
+        ok &= ExpectStatus(booleanModule->Destroy(canonicalTrue), StatusCode::InvalidArgument,
+                           "Canonical box protected");
+        return ok;
+    }
+
+    bool StringModuleHandlesInterningAndTransforms() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        bool ok = ExpectTrue(runtime != nullptr, "Runtime created");
+        if (!runtime) {
+            return false;
+        }
+        auto &environment = runtime->EsEnvironment();
+        auto *modulePtr = environment.FindModule("String");
+        auto *stringModule = dynamic_cast<spectre::es2025::StringModule *>(modulePtr);
+        ok &= ExpectTrue(stringModule != nullptr, "String module available");
+        if (!stringModule) {
+            return false;
+        }
+
+        spectre::es2025::StringModule::Handle base = 0;
+        ok &= ExpectStatus(stringModule->Create("demo.base", "  hello  ", base), StatusCode::Ok, "Create base string");
+        auto baseView = stringModule->View(base);
+        ok &= ExpectTrue(baseView == "  hello  ", "Base view matches input");
+
+        ok &= ExpectStatus(stringModule->TrimAscii(base), StatusCode::Ok, "Trim whitespace");
+        baseView = stringModule->View(base);
+        ok &= ExpectTrue(baseView == "hello", "Trim applied");
+
+        auto trimmedHash = stringModule->Hash(base);
+        ok &= ExpectStatus(stringModule->ToUpperAscii(base), StatusCode::Ok, "Uppercase transform");
+        baseView = stringModule->View(base);
+        ok &= ExpectTrue(baseView == "HELLO", "Uppercase applied");
+        ok &= ExpectTrue(stringModule->Hash(base) != trimmedHash, "Hash updated after uppercase");
+
+        ok &= ExpectStatus(stringModule->Append(base, " WORLD"), StatusCode::Ok, "Append suffix");
+        baseView = stringModule->View(base);
+        ok &= ExpectTrue(baseView == "HELLO WORLD", "Append result correct");
+
+        spectre::es2025::StringModule::Handle slice = 0;
+        ok &= ExpectStatus(stringModule->Slice(base, 6, 5, "demo.slice", slice), StatusCode::Ok, "Slice substring");
+        auto sliceView = stringModule->View(slice);
+        ok &= ExpectTrue(sliceView == "WORLD", "Slice matches expectation");
+
+        spectre::es2025::StringModule::Handle concat = 0;
+        ok &= ExpectStatus(stringModule->Concat(base, slice, "demo.concat", concat), StatusCode::Ok, "Concat success");
+        auto concatView = stringModule->View(concat);
+        ok &= ExpectTrue(concatView == "HELLO WORLDWORLD", "Concat matches expectation");
+
+        spectre::es2025::StringModule::Handle clone = 0;
+        ok &= ExpectStatus(stringModule->Clone(slice, "demo.clone", clone), StatusCode::Ok, "Clone success");
+        ok &= ExpectTrue(stringModule->View(clone) == "WORLD", "Clone view matches");
+
+        spectre::es2025::StringModule::Handle internA = 0;
+        ok &= ExpectStatus(stringModule->Intern("spectre.hero", internA), StatusCode::Ok, "Intern miss recorded");
+        spectre::es2025::StringModule::Handle internB = 0;
+        ok &= ExpectStatus(stringModule->Intern("spectre.hero", internB), StatusCode::Ok, "Intern hit recorded");
+        ok &= ExpectTrue(internA == internB, "Intern returns canonical handle");
+
+        ok &= ExpectStatus(stringModule->Release(clone), StatusCode::Ok, "Release clone");
+        ok &= ExpectStatus(stringModule->Release(concat), StatusCode::Ok, "Release concat");
+        ok &= ExpectStatus(stringModule->Release(slice), StatusCode::Ok, "Release slice");
+        ok &= ExpectStatus(stringModule->Release(base), StatusCode::Ok, "Release base");
+        ok &= ExpectTrue(!stringModule->Has(base), "Base handle removed");
+
+        ok &= ExpectStatus(stringModule->Release(internA), StatusCode::Ok, "Release first intern reference");
+        ok &= ExpectTrue(stringModule->Has(internB), "Intern handle held until final release");
+        ok &= ExpectStatus(stringModule->Release(internB), StatusCode::Ok, "Release second intern reference");
+        ok &= ExpectTrue(!stringModule->Has(internA), "Intern handle removed after final release");
+
+        const auto &metrics = stringModule->GetMetrics();
+        ok &= ExpectTrue(metrics.allocations >= 5, "String allocations counted");
+        ok &= ExpectTrue(metrics.internHits >= 1, "Intern hits counted");
+        ok &= ExpectTrue(metrics.internMisses >= 1, "Intern misses counted");
+        ok &= ExpectTrue(metrics.transforms >= 3, "Transform operations counted");
+        ok &= ExpectTrue(metrics.slices >= 2, "Slice operations counted");
+        ok &= ExpectTrue(metrics.activeStrings == 0, "No active strings remaining");
+
+        return ok;
+    }
+
+    bool MathModuleAcceleratesWorkloads() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        bool ok = ExpectTrue(runtime != nullptr, "Runtime created");
+        if (!runtime) {
+            return false;
+        }
+        auto &environment = runtime->EsEnvironment();
+        auto *modulePtr = environment.FindModule("Math");
+        auto *mathModule = dynamic_cast<spectre::es2025::MathModule *>(modulePtr);
+        ok &= ExpectTrue(mathModule != nullptr, "Math module available");
+        if (!mathModule) {
+            return false;
+        }
+
+        double angle = 1.2345;
+        auto sinFast = mathModule->FastSin(angle);
+        auto sinStd = std::sin(angle);
+        ok &= ExpectTrue(std::fabs(sinFast - sinStd) < 1e-4, "FastSin approximates std::sin");
+
+        double cosFast = mathModule->FastCos(angle);
+        double cosStd = std::cos(angle);
+        ok &= ExpectTrue(std::fabs(cosFast - cosStd) < 1e-4, "FastCos approximates std::cos");
+
+        auto reduced = mathModule->ReduceAngle(15.25);
+        ok &= ExpectTrue(reduced >= -3.14159 && reduced <= 3.14159, "ReduceAngle clamps range");
+
+        auto tanFast = mathModule->FastTan(0.5);
+        ok &= ExpectTrue(std::fabs(tanFast - std::tan(0.5)) < 1e-3, "FastTan approximates std::tan");
+
+        auto sqrtFast = mathModule->FastSqrt(144.0);
+        ok &= ExpectTrue(std::fabs(sqrtFast - 12.0) < 1e-9, "FastSqrt accurate");
+
+        auto invSqrtFast = mathModule->FastInverseSqrt(49.0f);
+        ok &= ExpectTrue(std::fabs(static_cast<double>(invSqrtFast) - (1.0 / 7.0)) < 1e-3,
+                         "FastInverseSqrt approximates reciprocal sqrt");
+
+        double lhs3[3] = {1.0, 2.0, 3.0};
+        double rhs3[3] = {4.0, 5.0, 6.0};
+        ok &= ExpectTrue(std::fabs(mathModule->Dot3(lhs3, rhs3) - 32.0) < 1e-9, "Dot3 result correct");
+
+        double lhs4[4] = {1.0, -2.0, 3.0, -4.0};
+        double rhs4[4] = {5.0, 6.0, -7.0, 8.0};
+        double expectedDot4 = 1.0 * 5.0 + (-2.0) * 6.0 + 3.0 * (-7.0) + (-4.0) * 8.0;
+        ok &= ExpectTrue(std::fabs(mathModule->Dot4(lhs4, rhs4) - expectedDot4) < 1e-9, "Dot4 result correct");
+
+        double fmaA[4] = {0.5, 1.5, 2.5, 3.5};
+        double fmaB[4] = {2.0, -2.0, 3.0, -3.0};
+        double fmaC[4] = {1.0, 1.0, 1.0, 1.0};
+        double fmaOut[4] = {0.0, 0.0, 0.0, 0.0};
+        mathModule->BatchedFma(fmaA, fmaB, fmaC, fmaOut, 4);
+        ok &= ExpectTrue(std::fabs(fmaOut[0] - (0.5 * 2.0 + 1.0)) < 1e-9, "BatchedFma first lane");
+        ok &= ExpectTrue(std::fabs(fmaOut[3] - (3.5 * -3.0 + 1.0)) < 1e-9, "BatchedFma last lane");
+
+        double coeffs[4] = {2.0, -3.0, 0.5, 4.0};
+        auto horner = mathModule->Horner(coeffs, 4, 1.25);
+        double expectedHorner = ((2.0 * 1.25 - 3.0) * 1.25 + 0.5) * 1.25 + 4.0;
+        ok &= ExpectTrue(std::fabs(horner - expectedHorner) < 1e-9, "Horner evaluation matches");
+
+        auto lerp = mathModule->Lerp(-10.0, 10.0, 0.75);
+        ok &= ExpectTrue(std::fabs(lerp - 5.0) < 1e-9, "Lerp result correct");
+
+        auto clamp = mathModule->Clamp(42.0, -1.0, 5.0);
+        ok &= ExpectTrue(clamp == 5.0, "Clamp upper bound");
+
+        const auto &metrics = mathModule->GetMetrics();
+        ok &= ExpectTrue(metrics.fastSinCalls >= 1, "fastSin counted");
+        ok &= ExpectTrue(metrics.fastCosCalls >= 1, "fastCos counted");
+        ok &= ExpectTrue(metrics.fastTanCalls >= 1, "fastTan counted");
+        ok &= ExpectTrue(metrics.fastSqrtCalls >= 1, "fastSqrt counted");
+        ok &= ExpectTrue(metrics.fastInvSqrtCalls >= 1, "fastInvSqrt counted");
+        ok &= ExpectTrue(metrics.batchedFmaOps >= 4, "Batched FMA counted");
+        ok &= ExpectTrue(metrics.hornerEvaluations >= 1, "Horner counted");
+        ok &= ExpectTrue(metrics.dotProducts >= 2, "Dot product counted");
+        ok &= ExpectTrue(metrics.tableSize >= 1024, "Lookup table populated");
+
+        return ok;
+    }
+
+    bool NumberModuleHandlesAggregates() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        bool ok = ExpectTrue(runtime != nullptr, "Runtime created");
+        if (!runtime) {
+            return false;
+        }
+        auto &environment = runtime->EsEnvironment();
+        auto *modulePtr = environment.FindModule("Number");
+        auto *numberModule = dynamic_cast<spectre::es2025::NumberModule *>(modulePtr);
+        ok &= ExpectTrue(numberModule != nullptr, "Number module available");
+        if (!numberModule) {
+            return false;
+        }
+
+        spectre::es2025::NumberModule::Handle value = 0;
+        ok &= ExpectStatus(numberModule->Create("analytics.frame", 42.5, value), StatusCode::Ok, "Create number");
+        ok &= ExpectTrue(numberModule->ValueOf(value) == 42.5, "Initial value matches");
+        ok &= ExpectStatus(numberModule->Add(value, -12.5), StatusCode::Ok, "Add delta");
+        ok &= ExpectTrue(std::fabs(numberModule->ValueOf(value) - 30.0) < 1e-9, "Addition applied");
+        ok &= ExpectStatus(numberModule->Multiply(value, 2.0), StatusCode::Ok, "Multiply");
+        ok &= ExpectTrue(std::fabs(numberModule->ValueOf(value) - 60.0) < 1e-9, "Multiplication applied");
+        ok &= ExpectStatus(numberModule->Saturate(value, 0.0, 50.0), StatusCode::Ok, "Saturate clamp");
+        ok &= ExpectTrue(std::fabs(numberModule->ValueOf(value) - 50.0) < 1e-9, "Saturation applied");
+
+        double samples[6] = {5.0, 7.0, 11.0, 13.0, 17.0, 19.0};
+        double sum = 0.0;
+        ok &= ExpectStatus(numberModule->Accumulate(samples, 6, sum), StatusCode::Ok, "Accumulate vector");
+        ok &= ExpectTrue(std::fabs(sum - 72.0) < 1e-9, "Accumulation result");
+
+        ok &= ExpectStatus(numberModule->Normalize(samples, 6, -1.0, 1.0), StatusCode::Ok, "Normalize range");
+        for (double sample: samples) {
+            ok &= ExpectTrue(sample >= -1.0000001 && sample <= 1.0000001, "Normalized bounds");
+        }
+
+        spectre::es2025::NumberModule::Statistics summary{};
+        ok &= ExpectStatus(numberModule->BuildStatistics(samples, 6, summary), StatusCode::Ok, "Summary build");
+        ok &= ExpectTrue(summary.maxValue <= 1.0000001, "Summary max range");
+
+        auto zeroHandle = numberModule->Canonical(0.0);
+        ok &= ExpectTrue(numberModule->Has(zeroHandle), "Canonical zero registered");
+        auto nanHandle = numberModule->Canonical(std::numeric_limits<double>::quiet_NaN());
+        ok &= ExpectTrue(numberModule->Has(nanHandle), "Canonical NaN registered");
+        auto transientHandle = numberModule->Canonical(1234.0);
+        ok &= ExpectStatus(numberModule->Destroy(transientHandle), StatusCode::Ok, "Destroy transient canonical");
+        ok &= ExpectStatus(numberModule->Destroy(value), StatusCode::Ok, "Destroy number handle");
+
+        const auto &metrics = numberModule->GetMetrics();
+        ok &= ExpectTrue(metrics.allocations >= 1, "Allocations tracked");
+        ok &= ExpectTrue(metrics.mutations >= 2, "Mutations tracked");
+        ok &= ExpectTrue(metrics.accumulations >= 1, "Accumulations tracked");
+        ok &= ExpectTrue(metrics.normalizations >= 1, "Normalizations tracked");
+
+        return ok;
+    }
+
+    bool BigIntModulePerformsArithmetic() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        bool ok = ExpectTrue(runtime != nullptr, "Runtime created");
+        if (!runtime) {
+            return false;
+        }
+        auto &environment = runtime->EsEnvironment();
+        auto *modulePtr = environment.FindModule("BigInt");
+        auto *bigintModule = dynamic_cast<spectre::es2025::BigIntModule *>(modulePtr);
+        ok &= ExpectTrue(bigintModule != nullptr, "BigInt module available");
+        if (!bigintModule) {
+            return false;
+        }
+
+        spectre::es2025::BigIntModule::Handle base = 0;
+        ok &= ExpectStatus(bigintModule->Create("counter.base", 123456789, base), StatusCode::Ok, "Create base bigint");
+
+        spectre::es2025::BigIntModule::Handle delta = 0;
+        ok &= ExpectStatus(bigintModule->Create("counter.delta", 987654321, delta), StatusCode::Ok,
+                           "Create delta bigint");
+        ok &= ExpectStatus(bigintModule->Add(base, delta), StatusCode::Ok, "Add delta to base");
+
+        ok &= ExpectStatus(bigintModule->AddSigned(base, -123456789), StatusCode::Ok, "Subtract via signed add");
+        ok &= ExpectStatus(bigintModule->MultiplySmall(base, 8), StatusCode::Ok, "Multiply small");
+        ok &= ExpectStatus(bigintModule->ShiftLeft(base, 5), StatusCode::Ok, "Shift left bits");
+
+        std::string decimal;
+        ok &= ExpectStatus(bigintModule->ToDecimalString(base, decimal), StatusCode::Ok, "Decimal conversion");
+        ok &= ExpectTrue(!decimal.empty(), "Decimal string produced");
+
+        std::uint64_t value64 = 0;
+        auto toUint = bigintModule->ToUint64(base, value64);
+        ok &= ExpectTrue(toUint == StatusCode::Ok || toUint == StatusCode::CapacityExceeded,
+                         "Uint64 conversion status");
+
+        spectre::es2025::BigIntModule::Handle parsed = 0;
+        ok &= ExpectStatus(bigintModule->CreateFromDecimal("counter.parsed", "44321378655999887766", parsed),
+                           StatusCode::Ok, "Parse decimal");
+
+        auto comparison = bigintModule->Compare(parsed, base);
+        ok &= ExpectTrue(comparison.digits >= 1, "Comparison digits populated");
+
+        ok &= ExpectStatus(bigintModule->Destroy(delta), StatusCode::Ok, "Destroy delta");
+        ok &= ExpectStatus(bigintModule->Destroy(parsed), StatusCode::Ok, "Destroy parsed");
+        ok &= ExpectStatus(bigintModule->Destroy(base), StatusCode::Ok, "Destroy base");
+
+        const auto &metrics = bigintModule->GetMetrics();
+        ok &= ExpectTrue(metrics.allocations >= 3, "Allocations tracked");
+        ok &= ExpectTrue(metrics.additions >= 2, "Additions tracked");
+        ok &= ExpectTrue(metrics.multiplications >= 2, "Multiplications tracked");
+        ok &= ExpectTrue(metrics.conversions >= 1, "Conversions tracked");
+
         return ok;
     }
 
@@ -921,6 +1197,10 @@ int main() {
         {"ArrayModuleCloneAndClear", ArrayModuleCloneAndClear},
         {"AtomicsModuleAllocatesAndAtomicallyUpdates", AtomicsModuleAllocatesAndAtomicallyUpdates},
         {"BooleanModuleCastsAndBoxes", BooleanModuleCastsAndBoxes},
+        {"StringModuleHandlesInterningAndTransforms", StringModuleHandlesInterningAndTransforms},
+        {"NumberModuleHandlesAggregates", NumberModuleHandlesAggregates},
+        {"BigIntModulePerformsArithmetic", BigIntModulePerformsArithmetic},
+        {"MathModuleAcceleratesWorkloads", MathModuleAcceleratesWorkloads},
         {"TickAndReconfigureUpdatesState", TickAndReconfigureUpdatesState}
     };
 

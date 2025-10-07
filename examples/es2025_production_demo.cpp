@@ -17,7 +17,10 @@
 #include "spectre/es2025/modules/atomics_module.h"
 #include "spectre/es2025/modules/boolean_module.h"
 #include "spectre/es2025/modules/array_module.h"
-
+#include "spectre/es2025/modules/string_module.h"
+#include "spectre/es2025/modules/math_module.h"
+#include "spectre/es2025/modules/number_module.h"
+#include "spectre/es2025/modules/bigint_module.h"
 namespace {
     spectre::StatusCode DemoSumCallback(const std::vector<std::string> &args, std::string &outResult, void *) {
         long total = 0;
@@ -250,6 +253,149 @@ namespace {
 
 }
 
+    void DemonstrateStringModule(spectre::es2025::StringModule &stringModule) {
+        std::cout << "\nDemonstrating string module" << std::endl;
+        spectre::es2025::StringModule::Handle title = 0;
+        if (stringModule.Create("demo.title", "  spectre-js  ", title) != spectre::StatusCode::Ok) {
+            std::cout << "  unable to allocate base string" << std::endl;
+            return;
+        }
+
+        stringModule.TrimAscii(title);
+        stringModule.ToUpperAscii(title);
+        stringModule.Append(title, " ENGINE");
+
+        auto titleView = stringModule.View(title);
+        std::cout << "  title => " << titleView << std::endl;
+
+        spectre::es2025::StringModule::Handle slice = 0;
+        if (stringModule.Slice(title, 11, 6, "demo.slice", slice) == spectre::StatusCode::Ok) {
+            std::cout << "  slice => " << stringModule.View(slice) << std::endl;
+        }
+
+        spectre::es2025::StringModule::Handle intern = 0;
+        if (stringModule.Intern("spectre.hero", intern) == spectre::StatusCode::Ok) {
+            std::cout << "  intern => " << stringModule.View(intern) << std::endl;
+        }
+
+        const auto &metrics = stringModule.GetMetrics();
+        std::cout << "  metrics: allocations=" << metrics.allocations
+                  << " transforms=" << metrics.transforms
+                  << " internHits=" << metrics.internHits
+                  << " internMisses=" << metrics.internMisses << std::endl;
+
+        if (slice != 0) {
+            stringModule.Release(slice);
+        }
+        if (intern != 0) {
+            stringModule.Release(intern);
+        }
+        stringModule.Release(title);
+    }
+
+    void DemonstrateMathModule(spectre::es2025::MathModule &mathModule) {
+        std::cout << "\nDemonstrating math module" << std::endl;
+        auto originalFlags = std::cout.flags();
+        auto originalPrecision = std::cout.precision();
+
+        constexpr double angle = 0.78539816339;
+        double sinFast = mathModule.FastSin(angle);
+        double cosFast = mathModule.FastCos(angle);
+        double tanFast = mathModule.FastTan(angle);
+        float invSqrt = mathModule.FastInverseSqrt(256.0f);
+        double reduced = mathModule.ReduceAngle(10.0);
+        double lerpValue = mathModule.Lerp(-20.0, 20.0, 0.35);
+
+        double lhs3[3] = {1.0, 2.0, 3.0};
+        double rhs3[3] = {4.0, 5.0, 6.0};
+        double dot3 = mathModule.Dot3(lhs3, rhs3);
+
+        double fmaA[4] = {1.0, 2.0, 3.0, 4.0};
+        double fmaB[4] = {0.5, -0.25, 0.75, -1.0};
+        double fmaC[4] = {0.0, 0.5, -0.5, 1.0};
+        double fmaOut[4] = {0.0, 0.0, 0.0, 0.0};
+        mathModule.BatchedFma(fmaA, fmaB, fmaC, fmaOut, 4);
+
+        std::cout << std::fixed << std::setprecision(5);
+        std::cout << "  angle=" << angle
+                  << " sin=" << sinFast
+                  << " cos=" << cosFast
+                  << " tan=" << tanFast << std::endl;
+        std::cout << "  invsqrt(256)=" << invSqrt
+                  << " reduced=" << reduced
+                  << " lerp=" << lerpValue << std::endl;
+        std::cout << "  dot3 => " << dot3 << std::endl;
+        std::cout << "  fma lanes => ["
+                  << fmaOut[0] << ", "
+                  << fmaOut[1] << ", "
+                  << fmaOut[2] << ", "
+                  << fmaOut[3] << "]" << std::endl;
+
+        const auto &metrics = mathModule.GetMetrics();
+        std::cout << "  metrics: sinCalls=" << metrics.fastSinCalls
+                  << " cosCalls=" << metrics.fastCosCalls
+                  << " tanCalls=" << metrics.fastTanCalls
+                  << " fmaOps=" << metrics.batchedFmaOps << std::endl;
+
+        std::cout.flags(originalFlags);
+        std::cout.precision(originalPrecision);
+    }
+void DemonstrateNumberModule(spectre::es2025::NumberModule &numberModule) {
+    std::cout << "\nDemonstrating number module" << std::endl;
+    auto preservedFlags = std::cout.flags();
+    auto preservedPrecision = std::cout.precision();
+    double telemetry[6] = {12.0, 14.5, 18.25, 21.75, 16.5, 13.0};
+    spectre::es2025::NumberModule::Handle peak = 0;
+    if (numberModule.Create("metrics.peak", telemetry[2], peak) != spectre::StatusCode::Ok) {
+        std::cout << "  unable to allocate number" << std::endl;
+        return;
+    }
+    numberModule.Add(peak, 9.5);
+    numberModule.Saturate(peak, 0.0, 32.0);
+    double sum = 0.0;
+    numberModule.Accumulate(telemetry, 6, sum);
+    numberModule.Normalize(telemetry, 6, 0.0, 1.0);
+    spectre::es2025::NumberModule::Statistics summary{};
+    numberModule.BuildStatistics(telemetry, 6, summary);
+    auto canonicalZero = numberModule.Canonical(0.0);
+    std::cout << std::fixed << std::setprecision(3);
+    std::cout << "  peak => " << numberModule.ValueOf(peak)
+              << " normalized mean=" << summary.mean
+              << " variance=" << summary.variance << std::endl;
+    const auto &metrics = numberModule.GetMetrics();
+    std::cout << "  metrics: allocations=" << metrics.allocations
+              << " mutations=" << metrics.mutations
+              << " accumulations=" << metrics.accumulations << std::endl;
+    std::cout << "  canonical zero handle=" << canonicalZero << std::endl;
+    numberModule.Destroy(peak);
+    std::cout.flags(preservedFlags);
+    std::cout.precision(preservedPrecision);
+}
+
+void DemonstrateBigIntModule(spectre::es2025::BigIntModule &bigintModule) {
+    std::cout << "\nDemonstrating bigint module" << std::endl;
+    spectre::es2025::BigIntModule::Handle base = 0;
+    if (bigintModule.CreateFromDecimal("ledger.base", "12345678901234567890", base) != spectre::StatusCode::Ok) {
+        std::cout << "  unable to allocate base bigint" << std::endl;
+        return;
+    }
+    spectre::es2025::BigIntModule::Handle delta = 0;
+    bigintModule.Create("ledger.delta", 1024, delta);
+    bigintModule.Add(base, delta);
+    bigintModule.ShiftLeft(base, 12);
+    bigintModule.MultiplySmall(base, 5);
+    std::string decimal;
+    bigintModule.ToDecimalString(base, decimal);
+    auto comparison = bigintModule.Compare(base, delta);
+    std::cout << "  base => " << decimal << std::endl;
+    std::cout << "  compare sign=" << comparison.sign << " digits=" << comparison.digits << std::endl;
+    const auto &metrics = bigintModule.GetMetrics();
+    std::cout << "  metrics: allocations=" << metrics.allocations
+              << " additions=" << metrics.additions
+              << " multiplications=" << metrics.multiplications << std::endl;
+    bigintModule.Destroy(delta);
+    bigintModule.Destroy(base);
+}
 int main() {
     using namespace spectre;
 
@@ -307,6 +453,34 @@ int main() {
         return 1;
     }
 
+    auto *numberModulePtr = environment.FindModule("Number");
+    auto *numberModule = dynamic_cast<es2025::NumberModule *>(numberModulePtr);
+    if (!numberModule) {
+        std::cerr << "Number module unavailable" << std::endl;
+        return 1;
+    }
+
+    auto *bigintModulePtr = environment.FindModule("BigInt");
+    auto *bigintModule = dynamic_cast<es2025::BigIntModule *>(bigintModulePtr);
+    if (!bigintModule) {
+        std::cerr << "BigInt module unavailable" << std::endl;
+        return 1;
+    }
+
+    auto *stringModulePtr = environment.FindModule("String");
+    auto *stringModule = dynamic_cast<es2025::StringModule *>(stringModulePtr);
+    if (!stringModule) {
+        std::cerr << "String module unavailable" << std::endl;
+        return 1;
+    }
+
+    auto *mathModulePtr = environment.FindModule("Math");
+    auto *mathModule = dynamic_cast<es2025::MathModule *>(mathModulePtr);
+    if (!mathModule) {
+        std::cerr << "Math module unavailable" << std::endl;
+        return 1;
+    }
+
     functionModule->RegisterHostFunction("demo.sum", DemoSumCallback);
     functionModule->RegisterHostFunction("demo.upper", DemoUpperCallback);
 
@@ -328,6 +502,10 @@ int main() {
     DemonstrateArrayModule(*arrayModule);
     DemonstrateAtomicsModule(*atomicsModule);
     DemonstrateBooleanModule(*booleanModule);
+    DemonstrateStringModule(*stringModule);
+    DemonstrateMathModule(*mathModule);
+    DemonstrateNumberModule(*numberModule);
+    DemonstrateBigIntModule(*bigintModule);
 
     std::cout << "\nDemonstrating error capture" << std::endl;
     std::string failingValue;
@@ -367,4 +545,18 @@ int main() {
     std::cout << "\nES2025 production scaffold ready" << std::endl;
     return 0;
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
