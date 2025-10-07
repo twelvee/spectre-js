@@ -105,7 +105,7 @@ Mode selection is hot-swappable at runtime via `SpectreRuntime::reconfigure` whi
 - GC operates with concurrent marking and stop-the-world compaction at frame boundaries.
 - Cross-context messaging via lock-free ring buffers with epoch stamps.
 
-### GPU Accelerated Mode
+### GPU Acceleration Details
 
 - Hot loops annotated through profile feedback are lowered to compute kernels.
 - Uses LLVM-based pipeline with NVPTX and SPIR-V backends.
@@ -157,6 +157,7 @@ Mode selection is hot-swappable at runtime via `SpectreRuntime::reconfigure` whi
 ## Coding Standards
 
 See `docs/coding_conventions.md` for naming, error handling, and object model rules that all runtime and embedding code must follow.
+
 
 
 

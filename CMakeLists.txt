@@ -9,7 +9,10 @@ add_library(spectre STATIC
     src/config.cpp
     src/context.cpp
     src/runtime.cpp
+    src/mode_factory.cpp
     src/mode_single_thread.cpp
+    src/mode_multi_thread.cpp
+    src/mode_helpers.cpp
     src/subsystems.cpp
 )
 
@@ -18,9 +21,12 @@ target_include_directories(spectre PUBLIC include)
 target_compile_definitions(spectre PRIVATE $<$<CONFIG:Debug>:SPECTRE_DEBUG_BUILD>)
 
 add_executable(spectre_example_basic examples/basic_demo.cpp)
+add_executable(spectre_example_multi examples/multi_thread_demo.cpp)
 target_link_libraries(spectre_example_basic PRIVATE spectre)
+target_link_libraries(spectre_example_multi PRIVATE spectre)
 
 set_target_properties(spectre_example_basic PROPERTIES OUTPUT_NAME "spectre_example_basic")
+set_target_properties(spectre_example_multi PROPERTIES OUTPUT_NAME "spectre_example_multi")
 
 option(SPECTRE_BUILD_TESTS "Build spectre tests" ON)
 
@@ -30,5 +36,8 @@ if(SPECTRE_BUILD_TESTS)
     target_link_libraries(spectre_tests PRIVATE spectre)
     add_test(NAME spectre_runtime COMMAND spectre_tests)
 endif()
+
+
+
 
 

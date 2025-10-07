@@ -9,7 +9,7 @@ int main() {
     auto runtime = spectre::SpectreRuntime::Create(config);
 
     spectre::ContextConfig contextConfig{"demo", 1u << 16};
-    spectre::SpectreContext* context = nullptr;
+    spectre::SpectreContext *context = nullptr;
     auto status = runtime->CreateContext(contextConfig, &context);
     if (status != spectre::StatusCode::Ok && status != spectre::StatusCode::AlreadyExists) {
         std::cout << "Context creation failed" << std::endl;

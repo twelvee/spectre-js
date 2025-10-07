@@ -68,49 +68,58 @@ namespace spectre::detail {
     class ParserFrontend {
     public:
         virtual ~ParserFrontend() = default;
+
         virtual StatusCode ParseModule(const ScriptUnit &unit, ModuleArtifact &outArtifact) = 0;
     };
 
     class BytecodePipeline {
     public:
         virtual ~BytecodePipeline() = default;
+
         virtual StatusCode LowerModule(const ModuleArtifact &artifact, ExecutableProgram &outProgram) = 0;
     };
 
     class ExecutionEngine {
     public:
         virtual ~ExecutionEngine() = default;
+
         virtual ExecutionResponse Execute(const ExecutionRequest &request) = 0;
     };
 
     class GarbageCollector {
     public:
         virtual ~GarbageCollector() = default;
+
         virtual StatusCode Collect(GcSnapshot &snapshot) = 0;
     };
 
     class MemorySystem {
     public:
         virtual ~MemorySystem() = default;
+
         virtual StatusCode ApplyPlan(const MemoryBudgetPlan &plan) = 0;
     };
 
     class TelemetryHub {
     public:
         virtual ~TelemetryHub() = default;
+
         virtual void PushSample(const TelemetrySample &sample) = 0;
+
         virtual std::vector<TelemetrySample> Drain() = 0;
     };
 
     class Scheduler {
     public:
         virtual ~Scheduler() = default;
+
         virtual StatusCode PlanFrame(const SchedulerFramePlan &plan) = 0;
     };
 
     class InteropBridge {
     public:
         virtual ~InteropBridge() = default;
+
         virtual StatusCode Register(const InteropBinding &binding) = 0;
     };
 

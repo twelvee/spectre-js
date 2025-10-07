@@ -1,4 +1,4 @@
-#include <iostream>
+﻿#include <iostream>
 #include <string>
 #include <vector>
 
@@ -153,7 +153,7 @@ namespace {
         if (!ok) {
             return false;
         }
-        ok &= ExpectTrue(runtime->Config().mode == RuntimeMode::SingleThread, "Fallback to single thread");
+        ok &= ExpectTrue(runtime->Config().mode == RuntimeMode::MultiThread, "Configured multi thread");
         runtime->CreateContext({"render", 8192}, nullptr);
         spectre::BytecodeArtifact artifact{"bundle", {1, 2, 3, 4}};
         auto loadResult = runtime->LoadBytecode("render", artifact);
@@ -205,6 +205,37 @@ namespace {
         updated.mode = RuntimeMode::MultiThread;
         auto modeChangeStatus = runtime->Reconfigure(updated);
         ok &= ExpectStatus(modeChangeStatus, StatusCode::InvalidArgument, "Reconfigure mode change rejected");
+        return ok;
+    }
+
+    bool MultiThreadLifecycle() {
+        auto config = MakeConfig(RuntimeMode::MultiThread);
+        config.enableGpuAcceleration = true;
+        auto runtime = SpectreRuntime::Create(config);
+        bool ok = ExpectTrue(runtime != nullptr, "Runtime allocation");
+        if (!ok) {
+            return false;
+        }
+        ok &= ExpectTrue(runtime->Config().mode == RuntimeMode::MultiThread, "Runtime mode multi thread");
+        SpectreContext *context = nullptr;
+        auto status = runtime->CreateContext({"logic", 1u << 15}, &context);
+        ok &= ExpectStatus(status, StatusCode::Ok, "CreateContext status");
+        ok &= ExpectTrue(context != nullptr, "Context pointer valid");
+        spectre::ScriptSource script{"main", "return 'multi';"};
+        auto loadResult = runtime->LoadScript("logic", script);
+        ok &= ExpectStatus(loadResult.status, StatusCode::Ok, "LoadScript status");
+        auto evalResult = runtime->EvaluateSync("logic", "main");
+        ok &= ExpectStatus(evalResult.status, StatusCode::Ok, "EvaluateSync status");
+        ok &= ExpectTrue(evalResult.value == "multi", "EvaluateSync literal");
+        spectre::TickInfo tickInfo{0.016, 3};
+        runtime->Tick(tickInfo);
+        auto lastTick = runtime->LastTick();
+        ok &= ExpectTrue(lastTick.frameIndex == 3, "LastTick frame index");
+        ok &= ExpectTrue(lastTick.deltaSeconds == 0.016, "LastTick delta seconds");
+        status = runtime->DestroyContext("logic");
+        ok &= ExpectStatus(status, StatusCode::Ok, "DestroyContext status");
+        auto evalMissing = runtime->EvaluateSync("logic", "main");
+        ok &= ExpectStatus(evalMissing.status, StatusCode::NotFound, "Evaluate missing context");
         return ok;
     }
 
@@ -284,6 +315,7 @@ int main() {
         {"LiteralCoverage", LiteralCoverage},
         {"BytecodeRoundtripReturnsHash", BytecodeRoundtripReturnsHash},
         {"DestroyContextRejectsOperations", DestroyContextRejectsOperations},
+        {"MultiThreadLifecycle", MultiThreadLifecycle},
         {"SubsystemScaffoldingProvidesStubs", SubsystemScaffoldingProvidesStubs},
         {"TickAndReconfigureUpdatesState", TickAndReconfigureUpdatesState}
     };
@@ -304,6 +336,10 @@ int main() {
     std::cout << "Executed " << passed << " / " << tests.size() << " tests" << std::endl;
     return 0;
 }
+
+
+
+
 
 
 
