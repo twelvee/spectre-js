@@ -1,4 +1,4 @@
-﻿#include <fstream>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
@@ -24,6 +24,8 @@
 #include "spectre/es2025/modules/number_module.h"
 #include "spectre/es2025/modules/bigint_module.h"
 #include "spectre/es2025/modules/date_module.h"
+#include "spectre/es2025/modules/map_module.h"
+#include "spectre/es2025/modules/weak_map_module.h"
 
 namespace {
     spectre::StatusCode DemoSumCallback(const std::vector<std::string> &args, std::string &outResult, void *) {
@@ -232,7 +234,7 @@ namespace {
         if (booleanModule.ValueOf(falseHandle, value) == spectre::StatusCode::Ok) {
             std::cout << "  canonical false => " << value << std::endl;
         }
-        std::cout << "  \"  yes  \" => " << booleanModule.ToBoolean("  yes  ") << std::endl;
+        std::cout << " YES => " << booleanModule.ToBoolean("  yes  ") << std::endl;
         std::cout << "  0.0 => " << booleanModule.ToBoolean(0.0) << std::endl;
         spectre::es2025::BooleanModule::Handle flag = 0;
         if (booleanModule.Create("demo.flag", true, flag) == spectre::StatusCode::Ok) {
@@ -540,6 +542,85 @@ void DemonstrateProxyModule(spectre::es2025::ObjectModule &objectModule, spectre
             std::endl;
 }
 
+void DemonstrateMapModule(spectre::es2025::MapModule &mapModule) {
+    std::cout << "\nDemonstrating Map module" << std::endl;
+    spectre::es2025::MapModule::Handle handle = 0;
+    if (mapModule.Create("demo.map", handle) != spectre::StatusCode::Ok) {
+        std::cout << "  map unavailable" << std::endl;
+        return;
+    }
+    mapModule.Set(handle, spectre::es2025::MapModule::Value::FromString("name"),
+                  spectre::es2025::MapModule::Value::FromString("spectre-map"));
+    mapModule.Set(handle, spectre::es2025::MapModule::Value::FromInt(7),
+                  spectre::es2025::MapModule::Value::FromDouble(42.5));
+    spectre::es2025::MapModule::Value value;
+    if (mapModule.Get(handle, spectre::es2025::MapModule::Value::FromString("name"), value) == spectre::StatusCode::Ok
+        && value.IsString()) {
+        std::cout << "  name => " << value.String() << std::endl;
+    }
+    std::vector<spectre::es2025::MapModule::Value> keys;
+    if (mapModule.Keys(handle, keys) == spectre::StatusCode::Ok) {
+        std::cout << "  keys:";
+        for (const auto &k: keys) {
+            if (k.IsString()) {
+                std::cout << " " << k.String();
+            } else if (k.IsInt()) {
+                std::cout << " " << k.Int();
+            }
+        }
+        std::cout << std::endl;
+    }
+    std::vector<spectre::es2025::MapModule::Value> values;
+    if (mapModule.Values(handle, values) == spectre::StatusCode::Ok) {
+        std::cout << "  values:";
+        for (const auto &v: values) {
+            if (v.IsString()) {
+                std::cout << " " << v.String();
+            } else if (v.IsDouble()) {
+                std::cout << " " << v.Double();
+            }
+        }
+        std::cout << std::endl;
+    }
+    bool removed = false;
+    mapModule.Delete(handle, spectre::es2025::MapModule::Value::FromInt(7), removed);
+    std::cout << "  delete numeric key => " << (removed ? "true" : "false") << std::endl;
+    mapModule.Clear(handle);
+    mapModule.Destroy(handle);
+}
+
+void DemonstrateWeakMapModule(spectre::es2025::ObjectModule &objectModule,
+                              spectre::es2025::WeakMapModule &weakMapModule) {
+    std::cout << "\nDemonstrating WeakMap module" << std::endl;
+    spectre::es2025::WeakMapModule::Handle handle = 0;
+    if (weakMapModule.Create("demo.weakmap", handle) != spectre::StatusCode::Ok) {
+        std::cout << "  weak map unavailable" << std::endl;
+        return;
+    }
+    spectre::es2025::ObjectModule::Handle keyA = 0;
+    spectre::es2025::ObjectModule::Handle keyB = 0;
+    if (objectModule.Create("demo.weakmap.keyA", 0, keyA) != spectre::StatusCode::Ok || objectModule.
+        Create("demo.weakmap.keyB", 0, keyB) != spectre::StatusCode::Ok) {
+        std::cout << "  object handles unavailable" << std::endl;
+        if (keyA != 0) {
+            objectModule.Destroy(keyA);
+        }
+        weakMapModule.Destroy(handle);
+        return;
+    }
+    weakMapModule.Set(handle, keyA, spectre::es2025::WeakMapModule::Value::FromInt(12));
+    weakMapModule.Set(handle, keyB, spectre::es2025::WeakMapModule::Value::FromInt(44));
+    spectre::es2025::WeakMapModule::Value value;
+    if (weakMapModule.Get(handle, keyA, value) == spectre::StatusCode::Ok && value.IsInt()) {
+        std::cout << "  keyA => " << value.Int() << std::endl;
+    }
+    objectModule.Destroy(keyA);
+    weakMapModule.Compact(handle);
+    std::cout << "  size after destroy => " << weakMapModule.Size(handle) << std::endl;
+    weakMapModule.Destroy(handle);
+    objectModule.Destroy(keyB);
+}
+
 int main() {
     using namespace spectre;
 
@@ -573,6 +654,20 @@ int main() {
     auto *proxyModule = dynamic_cast<es2025::ProxyModule *>(proxyModulePtr);
     if (!proxyModule) {
         std::cerr << "Proxy module unavailable" << std::endl;
+        return 1;
+    }
+
+    auto *mapModulePtr = environment.FindModule("Map");
+    auto *mapModule = dynamic_cast<es2025::MapModule *>(mapModulePtr);
+    if (!mapModule) {
+        std::cerr << "Map module unavailable" << std::endl;
+        return 1;
+    }
+
+    auto *weakMapModulePtr = environment.FindModule("WeakMap");
+    auto *weakMapModule = dynamic_cast<es2025::WeakMapModule *>(weakMapModulePtr);
+    if (!weakMapModule) {
+        std::cerr << "WeakMap module unavailable" << std::endl;
         return 1;
     }
 
@@ -674,6 +769,8 @@ int main() {
     DemonstrateBigIntModule(*bigintModule);
     DemonstrateObjectModule(*objectModule);
     DemonstrateProxyModule(*objectModule, *proxyModule);
+    DemonstrateMapModule(*mapModule);
+    DemonstrateWeakMapModule(*objectModule, *weakMapModule);
 
     std::cout << "\nDemonstrating error capture" << std::endl;
     std::string failingValue;
