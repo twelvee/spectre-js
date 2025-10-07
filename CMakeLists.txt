@@ -10,6 +10,7 @@ add_library(spectre STATIC
     src/context.cpp
     src/runtime.cpp
     src/mode_single_thread.cpp
+    src/subsystems.cpp
 )
 
 target_include_directories(spectre PUBLIC include)
@@ -29,3 +30,5 @@ if(SPECTRE_BUILD_TESTS)
     target_link_libraries(spectre_tests PRIVATE spectre)
     add_test(NAME spectre_runtime COMMAND spectre_tests)
 endif()
+
+

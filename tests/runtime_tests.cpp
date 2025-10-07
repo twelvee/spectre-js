@@ -6,6 +6,7 @@
 #include "spectre/context.h"
 #include "spectre/runtime.h"
 #include "spectre/status.h"
+#include "spectre/subsystems.h"
 
 namespace {
     using spectre::RuntimeConfig;
@@ -91,7 +92,8 @@ namespace {
         auto evalResult = runtime->EvaluateSync("logic", "init");
         ok &= ExpectStatus(evalResult.status, StatusCode::Ok, "EvaluateSync status");
         ok &= ExpectTrue(evalResult.value == "42", "EvaluateSync literal");
-        ok &= ExpectTrue(evalResult.diagnostics == "Literal", std::string("Literal diagnostics actual: ") + evalResult.diagnostics);
+        ok &= ExpectTrue(evalResult.diagnostics == "Literal",
+                         std::string("Literal diagnostics actual: ") + evalResult.diagnostics);
         const SpectreContext *logicContext = nullptr;
         auto ctxStatus = runtime->GetContext("logic", &logicContext);
         ok &= ExpectStatus(ctxStatus, StatusCode::Ok, "GetContext status");
@@ -116,29 +118,31 @@ namespace {
             const char *name;
             const char *source;
             const char *expected;
-        } cases[] {
-            {"string", "return 'spectre';", "spectre"},
-            {"double", "return 3.1415;", "3.1415"},
-            {"int", "return 12;", "12"},
-            {"boolTrue", "return true;", "true"},
-            {"boolFalse", "return false;", "false"},
-            {"nullValue", "return null;", "null"},
-            {"undefinedValue", "return undefined;", "undefined"}
-        };
+        } cases[]{
+                    {"string", "return 'spectre';", "spectre"},
+                    {"double", "return 3.1415;", "3.1415"},
+                    {"int", "return 12;", "12"},
+                    {"boolTrue", "return true;", "true"},
+                    {"boolFalse", "return false;", "false"},
+                    {"nullValue", "return null;", "null"},
+                    {"undefinedValue", "return undefined;", "undefined"}
+                };
         bool ok = true;
-        for (const auto &c : cases) {
+        for (const auto &c: cases) {
             auto res = runtime->LoadScript("literals", {c.name, c.source});
             ok &= ExpectStatus(res.status, StatusCode::Ok, "Literal load status");
             auto eval = runtime->EvaluateSync("literals", c.name);
             ok &= ExpectStatus(eval.status, StatusCode::Ok, "Literal eval status");
             ok &= ExpectTrue(eval.value == c.expected, std::string("Literal eval value actual: ") + eval.value);
-            ok &= ExpectTrue(eval.diagnostics == "Literal", std::string("Literal eval diagnostics actual: ") + eval.diagnostics);
+            ok &= ExpectTrue(eval.diagnostics == "Literal",
+                             std::string("Literal eval diagnostics actual: ") + eval.diagnostics);
         }
         auto hashRes = runtime->LoadScript("literals", {"hash", "let x = 1;"});
         ok &= ExpectStatus(hashRes.status, StatusCode::Ok, "Hash load status");
         auto hashEval = runtime->EvaluateSync("literals", "hash");
         ok &= ExpectStatus(hashEval.status, StatusCode::Ok, "Hash eval status");
-        ok &= ExpectTrue(hashEval.diagnostics == std::string("Baseline hash"), std::string("Hash diagnostics actual: ") + hashEval.diagnostics);
+        ok &= ExpectTrue(hashEval.diagnostics == std::string("Baseline hash"),
+                         std::string("Hash diagnostics actual: ") + hashEval.diagnostics);
         ok &= ExpectTrue(!hashEval.value.empty(), "Hash value populated");
         return ok;
     }
@@ -157,14 +161,16 @@ namespace {
         auto evalResult = runtime->EvaluateSync("render", "bundle");
         ok &= ExpectStatus(evalResult.status, StatusCode::Ok, "EvaluateSync bytecode status");
         ok &= ExpectTrue(!evalResult.value.empty(), "Bytecode hash present");
-        ok &= ExpectTrue(evalResult.diagnostics == "Bytecode hash", std::string("Bytecode diagnostics actual: ") + evalResult.diagnostics);
+        ok &= ExpectTrue(evalResult.diagnostics == "Bytecode hash",
+                         std::string("Bytecode diagnostics actual: ") + evalResult.diagnostics);
         spectre::BytecodeArtifact fallback{"empty", {}};
         auto loadFallback = runtime->LoadBytecode("render", fallback);
         ok &= ExpectStatus(loadFallback.status, StatusCode::Ok, "Load empty bytecode status");
         auto evalFallback = runtime->EvaluateSync("render", "empty");
         ok &= ExpectStatus(evalFallback.status, StatusCode::Ok, "Eval empty bytecode status");
         ok &= ExpectTrue(!evalFallback.value.empty(), "Eval empty bytecode hash");
-        ok &= ExpectTrue(evalFallback.diagnostics == "Bytecode hash", std::string("Eval empty bytecode diagnostics actual: ") + evalFallback.diagnostics);
+        ok &= ExpectTrue(evalFallback.diagnostics == "Bytecode hash",
+                         std::string("Eval empty bytecode diagnostics actual: ") + evalFallback.diagnostics);
         return ok;
     }
 
@@ -200,8 +206,69 @@ namespace {
         return ok;
     }
 
+    bool SubsystemScaffoldingProvidesStubs() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        bool ok = ExpectTrue(runtime != nullptr, "Runtime init");
+        if (!ok) {
+            return false;
+        }
+        auto &manifest = runtime->Manifest();
+        ok &= ExpectTrue(manifest.parserBackend == "stub.parser.v0", "Parser backend name");
+        ok &= ExpectTrue(manifest.bytecodeBackend == "stub.bytecode.v0", "Bytecode backend name");
+        ok &= ExpectTrue(manifest.executionBackend == "stub.execution.v0", "Execution backend name");
+        ok &= ExpectTrue(manifest.gcBackend == "stub.gc.v0", "GC backend name");
+        ok &= ExpectTrue(manifest.memoryBackend == "stub.memory.v0", "Memory backend name");
+        ok &= ExpectTrue(manifest.telemetryBackend == "stub.telemetry.v0", "Telemetry backend name");
+        ok &= ExpectTrue(manifest.schedulerBackend == "stub.scheduler.v0", "Scheduler backend name");
+        ok &= ExpectTrue(manifest.interopBackend == "stub.interop.v0", "Interop backend name");
+        auto &suite = runtime->Subsystems();
+        ok &= ExpectTrue(suite.parser != nullptr, "Parser stub present");
+        ok &= ExpectTrue(suite.bytecode != nullptr, "Bytecode stub present");
+        ok &= ExpectTrue(suite.execution != nullptr, "Execution stub present");
+        ok &= ExpectTrue(suite.gc != nullptr, "GC stub present");
+        ok &= ExpectTrue(suite.memory != nullptr, "Memory stub present");
+        ok &= ExpectTrue(suite.telemetry != nullptr, "Telemetry stub present");
+        ok &= ExpectTrue(suite.scheduler != nullptr, "Scheduler stub present");
+        ok &= ExpectTrue(suite.interop != nullptr, "Interop stub present");
+        if (!ok) {
+            return false;
+        }
+        spectre::detail::ScriptUnit unit{"unit", "return 5;"};
+        spectre::detail::ModuleArtifact artifact{};
+        auto parseStatus = suite.parser->ParseModule(unit, artifact);
+        ok &= ExpectStatus(parseStatus, StatusCode::Ok, "Parse module status");
+        spectre::detail::ExecutableProgram program{};
+        auto lowerStatus = suite.bytecode->LowerModule(artifact, program);
+        ok &= ExpectStatus(lowerStatus, StatusCode::Ok, "Lower module status");
+        spectre::detail::ExecutionRequest request{"ctx", "entry", &program};
+        auto execResponse = suite.execution->Execute(request);
+        ok &= ExpectStatus(execResponse.status, StatusCode::Ok, "Execution stub status");
+        ok &= ExpectTrue(!execResponse.value.empty(), "Execution value populated");
+        spectre::detail::GcSnapshot snapshot{};
+        auto gcStatus = suite.gc->Collect(snapshot);
+        ok &= ExpectStatus(gcStatus, StatusCode::Ok, "GC collect status");
+        ok &= ExpectTrue(snapshot.generation > 0, "GC generation incremented");
+        spectre::detail::MemoryBudgetPlan plan{runtime->Config().memory, 64};
+        auto memoryStatus = suite.memory->ApplyPlan(plan);
+        ok &= ExpectStatus(memoryStatus, StatusCode::Ok, "Memory plan status");
+        spectre::detail::TelemetrySample sample{"frame", 1.0, 1};
+        suite.telemetry->PushSample(sample);
+        auto drained = suite.telemetry->Drain();
+        ok &= ExpectTrue(drained.size() == 1, "Telemetry drain count");
+        spectre::detail::SchedulerFramePlan framePlan{1, 0.5, 0.0};
+        auto scheduleStatus = suite.scheduler->PlanFrame(framePlan);
+        ok &= ExpectStatus(scheduleStatus, StatusCode::Ok, "Scheduler plan status");
+        spectre::detail::InteropBinding binding{"symbol", reinterpret_cast<void *>(0x1)};
+        auto interopStatus = suite.interop->Register(binding);
+        ok &= ExpectStatus(interopStatus, StatusCode::Ok, "Interop register status");
+        auto dupStatus = suite.interop->Register(binding);
+        ok &= ExpectStatus(dupStatus, StatusCode::AlreadyExists, "Interop duplicate status");
+        return ok;
+    }
+
     struct TestCase {
         const char *name;
+
         bool (*fn)();
     };
 }
@@ -215,6 +282,7 @@ int main() {
         {"LiteralCoverage", LiteralCoverage},
         {"BytecodeRoundtripReturnsHash", BytecodeRoundtripReturnsHash},
         {"DestroyContextRejectsOperations", DestroyContextRejectsOperations},
+        {"SubsystemScaffoldingProvidesStubs", SubsystemScaffoldingProvidesStubs},
         {"TickAndReconfigureUpdatesState", TickAndReconfigureUpdatesState}
     };
 
@@ -234,4 +302,3 @@ int main() {
     std::cout << "Executed " << passed << " / " << tests.size() << " tests" << std::endl;
     return 0;
 }
-

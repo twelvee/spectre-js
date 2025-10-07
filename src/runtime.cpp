@@ -8,6 +8,7 @@
 namespace spectre {
     struct SpectreRuntime::Impl {
         std::unique_ptr<detail::ModeAdapter> mode;
+        detail::SubsystemSuite subsystems;
         TickInfo lastTick{0.0, 0};
     };
 
@@ -22,6 +23,7 @@ namespace spectre {
                 return nullptr;
             }
         }
+        impl->subsystems = detail::CreateStubSubsystemSuite(impl->mode->Config());
         return std::unique_ptr<SpectreRuntime>(new SpectreRuntime(std::move(impl)));
     }
 
@@ -60,11 +62,34 @@ namespace spectre {
         if (config.mode != current.mode) {
             return StatusCode::InvalidArgument;
         }
-        return m_Impl->mode->Reconfigure(config);
+        auto status = m_Impl->mode->Reconfigure(config);
+        if (status != StatusCode::Ok) {
+            return status;
+        }
+        if (m_Impl->subsystems.memory) {
+            detail::MemoryBudgetPlan plan{config.memory, 0};
+            auto memoryStatus = m_Impl->subsystems.memory->ApplyPlan(plan);
+            if (memoryStatus != StatusCode::Ok) {
+                return memoryStatus;
+            }
+        }
+        return StatusCode::Ok;
     }
 
     const RuntimeConfig &SpectreRuntime::Config() const {
         return m_Impl->mode->Config();
+    }
+
+    detail::SubsystemSuite &SpectreRuntime::Subsystems() {
+        return m_Impl->subsystems;
+    }
+
+    const detail::SubsystemSuite &SpectreRuntime::Subsystems() const {
+        return m_Impl->subsystems;
+    }
+
+    const detail::SubsystemManifest &SpectreRuntime::Manifest() const {
+        return m_Impl->subsystems.manifest;
     }
 
     TickInfo SpectreRuntime::LastTick() const {
@@ -75,3 +100,14 @@ namespace spectre {
         return m_Impl->mode->GetContext(name, outContext);
     }
 }
+
+
+
+
+
+
+
+
+
+
+

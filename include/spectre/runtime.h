@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <cstdint>
 #include <memory>
@@ -8,6 +8,7 @@
 
 #include "spectre/config.h"
 #include "spectre/status.h"
+#include "spectre/subsystems.h"
 
 namespace spectre {
     struct TickInfo {
@@ -60,6 +61,12 @@ namespace spectre {
 
         const RuntimeConfig &Config() const;
 
+        detail::SubsystemSuite &Subsystems();
+
+        const detail::SubsystemSuite &Subsystems() const;
+
+        const detail::SubsystemManifest &Manifest() const;
+
         TickInfo LastTick() const;
 
         StatusCode GetContext(const std::string &name, const SpectreContext **outContext) const;
@@ -71,3 +78,7 @@ namespace spectre {
         explicit SpectreRuntime(std::unique_ptr<Impl> impl);
     };
 }
+
+
+
+
