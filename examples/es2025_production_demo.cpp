@@ -21,6 +21,8 @@
 #include "spectre/es2025/modules/math_module.h"
 #include "spectre/es2025/modules/number_module.h"
 #include "spectre/es2025/modules/bigint_module.h"
+#include "spectre/es2025/modules/date_module.h"
+
 namespace {
     spectre::StatusCode DemoSumCallback(const std::vector<std::string> &args, std::string &outResult, void *) {
         long total = 0;
@@ -340,6 +342,43 @@ namespace {
         std::cout.flags(originalFlags);
         std::cout.precision(originalPrecision);
     }
+void DemonstrateDateModule(spectre::es2025::DateModule &dateModule) {
+    std::cout << "\nDemonstrating date module" << std::endl;
+    spectre::es2025::DateModule::Handle nowHandle = 0;
+    if (dateModule.Now("demo.now", nowHandle) != spectre::StatusCode::Ok) {
+        std::cout << "  unable to create current date" << std::endl;
+        return;
+    }
+
+    std::string iso;
+    dateModule.FormatIso8601(nowHandle, iso);
+    spectre::es2025::DateModule::Components components{};
+    dateModule.ToComponents(nowHandle, components);
+
+    spectre::es2025::DateModule::Handle launchHandle = 0;
+    dateModule.ParseIso8601("2025-10-07T12:34:56.789Z", "demo.launch", launchHandle);
+
+    std::int64_t deltaMs = 0;
+    dateModule.DifferenceMilliseconds(launchHandle, nowHandle, deltaMs);
+
+    dateModule.AddDays(launchHandle, 3);
+    std::string shiftedIso;
+    dateModule.FormatIso8601(launchHandle, shiftedIso);
+
+    auto preservedFlags = std::cout.flags();
+    auto preservedPrecision = std::cout.precision();
+    std::cout << std::fixed << std::setprecision(3);
+    std::cout << "  now => " << iso << std::endl;
+    std::cout << "  now components => year=" << components.year
+              << " day=" << components.day
+              << " weekday=" << components.dayOfWeek << std::endl;
+    std::cout << "  launch => " << shiftedIso << " (delta " << deltaMs << " ms)" << std::endl;
+    std::cout.flags(preservedFlags);
+    std::cout.precision(preservedPrecision);
+
+    dateModule.Destroy(launchHandle);
+    dateModule.Destroy(nowHandle);
+}
 void DemonstrateNumberModule(spectre::es2025::NumberModule &numberModule) {
     std::cout << "\nDemonstrating number module" << std::endl;
     auto preservedFlags = std::cout.flags();
@@ -453,6 +492,13 @@ int main() {
         return 1;
     }
 
+    auto *dateModulePtr = environment.FindModule("Date");
+    auto *dateModule = dynamic_cast<es2025::DateModule *>(dateModulePtr);
+    if (!dateModule) {
+        std::cerr << "Date module unavailable" << std::endl;
+        return 1;
+    }
+
     auto *numberModulePtr = environment.FindModule("Number");
     auto *numberModule = dynamic_cast<es2025::NumberModule *>(numberModulePtr);
     if (!numberModule) {
@@ -504,6 +550,7 @@ int main() {
     DemonstrateBooleanModule(*booleanModule);
     DemonstrateStringModule(*stringModule);
     DemonstrateMathModule(*mathModule);
+    DemonstrateDateModule(*dateModule);
     DemonstrateNumberModule(*numberModule);
     DemonstrateBigIntModule(*bigintModule);
 
@@ -545,6 +592,11 @@ int main() {
     std::cout << "\nES2025 production scaffold ready" << std::endl;
     return 0;
 }
+
+
+
+
+
 
 
 

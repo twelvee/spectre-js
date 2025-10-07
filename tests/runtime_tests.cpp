@@ -20,6 +20,7 @@
 #include "spectre/es2025/modules/math_module.h"
 #include "spectre/es2025/modules/number_module.h"
 #include "spectre/es2025/modules/bigint_module.h"
+#include "spectre/es2025/modules/date_module.h"
 
 namespace {
     using spectre::RuntimeConfig;
@@ -1106,6 +1107,72 @@ namespace {
         return ok;
     }
 
+    bool DateModuleConstructsAndFormats() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        bool ok = ExpectTrue(runtime != nullptr, "Runtime created");
+        if (!runtime) {
+            return false;
+        }
+        auto &environment = runtime->EsEnvironment();
+        auto *modulePtr = environment.FindModule("Date");
+        auto *dateModule = dynamic_cast<spectre::es2025::DateModule *>(modulePtr);
+        ok &= ExpectTrue(dateModule != nullptr, "Date module available");
+        if (!dateModule) {
+            return false;
+        }
+
+        auto canonicalEpoch = dateModule->CanonicalEpoch();
+        ok &= ExpectTrue(dateModule->Has(canonicalEpoch), "Canonical epoch registered");
+
+        spectre::es2025::DateModule::Handle launch = 0;
+        ok &= ExpectStatus(dateModule->CreateFromComponents("mission.launch",
+                                                             2025, 10, 7, 12, 34, 56, 789,
+                                                             launch),
+                           StatusCode::Ok, "Create from components");
+        ok &= ExpectTrue(dateModule->Has(launch), "Launch handle registered");
+
+        spectre::es2025::DateModule::Components components{};
+        ok &= ExpectStatus(dateModule->ToComponents(launch, components), StatusCode::Ok, "Component extraction");
+        ok &= ExpectTrue(components.year == 2025 && components.month == 10 && components.day == 7, "Date fields correct");
+        ok &= ExpectTrue(components.hour == 12 && components.minute == 34 && components.second == 56 &&
+                         components.millisecond == 789, "Time fields correct");
+        ok &= ExpectTrue(components.dayOfWeek == 2, "Tuesday day of week");
+        ok &= ExpectTrue(components.dayOfYear == 280, "Day of year computed");
+
+        std::string iso;
+        ok &= ExpectStatus(dateModule->FormatIso8601(launch, iso), StatusCode::Ok, "ISO formatting");
+        ok &= ExpectTrue(iso == "2025-10-07T12:34:56.789Z", "ISO string match");
+
+        spectre::es2025::DateModule::Handle parsed = 0;
+        ok &= ExpectStatus(dateModule->ParseIso8601("2024-02-29T00:00:00.000Z", "leap", parsed), StatusCode::Ok,
+                           "Parse leap date");
+        spectre::es2025::DateModule::Components leap{};
+        ok &= ExpectStatus(dateModule->ToComponents(parsed, leap), StatusCode::Ok, "Extract leap components");
+        ok &= ExpectTrue(leap.day == 29 && leap.month == 2, "Leap day components");
+
+        ok &= ExpectStatus(dateModule->AddDays(launch, 10), StatusCode::Ok, "Add days");
+        ok &= ExpectStatus(dateModule->AddMilliseconds(launch, 250), StatusCode::Ok, "Add milliseconds");
+        auto shiftedEpoch = dateModule->EpochMilliseconds(launch, 0);
+        auto baseEpoch = dateModule->EpochMilliseconds(canonicalEpoch, -1);
+        ok &= ExpectTrue(shiftedEpoch > baseEpoch, "Epoch progressed");
+
+        std::int64_t delta = 0;
+        ok &= ExpectStatus(dateModule->DifferenceMilliseconds(launch, parsed, delta), StatusCode::Ok,
+                           "Difference computed");
+        ok &= ExpectTrue(delta != 0, "Difference non-zero");
+
+        ok &= ExpectStatus(dateModule->Destroy(parsed), StatusCode::Ok, "Destroy parsed handle");
+        ok &= ExpectStatus(dateModule->Destroy(launch), StatusCode::Ok, "Destroy launch handle");
+
+        const auto &metrics = dateModule->GetMetrics();
+        ok &= ExpectTrue(metrics.allocations >= 2, "Allocations tracked");
+        ok &= ExpectTrue(metrics.componentConversions >= 2, "Component conversions tracked");
+        ok &= ExpectTrue(metrics.isoFormats >= 1, "ISO formats tracked");
+        ok &= ExpectTrue(metrics.isoParses >= 1, "ISO parses tracked");
+        ok &= ExpectTrue(metrics.arithmeticOps >= 1, "Arithmetic ops tracked");
+
+        return ok;
+    }
     bool BigIntModulePerformsArithmetic() {
         auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
         bool ok = ExpectTrue(runtime != nullptr, "Runtime created");
@@ -1198,6 +1265,7 @@ int main() {
         {"AtomicsModuleAllocatesAndAtomicallyUpdates", AtomicsModuleAllocatesAndAtomicallyUpdates},
         {"BooleanModuleCastsAndBoxes", BooleanModuleCastsAndBoxes},
         {"StringModuleHandlesInterningAndTransforms", StringModuleHandlesInterningAndTransforms},
+        {"DateModuleConstructsAndFormats", DateModuleConstructsAndFormats},
         {"NumberModuleHandlesAggregates", NumberModuleHandlesAggregates},
         {"BigIntModulePerformsArithmetic", BigIntModulePerformsArithmetic},
         {"MathModuleAcceleratesWorkloads", MathModuleAcceleratesWorkloads},
@@ -1220,3 +1288,6 @@ int main() {
     std::cout << "Executed " << passed << " / " << tests.size() << " tests" << std::endl;
     return 0;
 }
+
+
+
