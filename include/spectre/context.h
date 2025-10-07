@@ -10,7 +10,9 @@
 namespace spectre {
     struct ScriptRecord {
         std::string source;
+        std::vector<std::uint8_t> bytecode;
         std::string bytecodeHash;
+        bool isBytecode{false};
     };
 
     class SpectreContext {
@@ -29,9 +31,18 @@ namespace spectre {
 
         std::vector<std::string> ScriptNames() const;
 
+        std::uint64_t ScriptVersion(const std::string &scriptName) const;
+
     private:
+        struct ScriptSlot {
+            std::string name;
+            ScriptRecord record;
+            std::uint64_t version;
+        };
+
         std::string m_Name;
         std::uint32_t m_StackSize;
-        std::unordered_map<std::string, ScriptRecord> m_Scripts;
+        std::vector<ScriptSlot> m_Slots;
+        std::unordered_map<std::string, std::size_t> m_Lookup;
     };
 }

@@ -9,6 +9,7 @@ add_library(spectre STATIC
     src/config.cpp
     src/context.cpp
     src/runtime.cpp
+    src/mode_single_thread.cpp
 )
 
 target_include_directories(spectre PUBLIC include)

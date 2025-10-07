@@ -16,7 +16,7 @@ int main() {
         return 1;
     }
 
-    spectre::ScriptSource script{"boot", "console.log('spectre');"};
+    spectre::ScriptSource script{"boot", "return 'spectre';"};
     auto loadResult = runtime->LoadScript("demo", script);
     if (loadResult.status != spectre::StatusCode::Ok) {
         std::cout << "Script load failed" << std::endl;
@@ -29,6 +29,6 @@ int main() {
         return 1;
     }
 
-    std::cout << "Result: " << evalResult.value << std::endl;
+    std::cout << "Result: " << evalResult.value << " diagnostics: " << evalResult.diagnostics << std::endl;
     return 0;
 }
