@@ -1,6 +1,7 @@
-#include <iostream>
+﻿#include <iostream>
 #include <limits>
 #include <string>
+#include <algorithm>
 #include <vector>
 #include <cmath>
 
@@ -11,6 +12,8 @@
 #include "spectre/subsystems.h"
 #include "spectre/es2025/environment.h"
 #include "spectre/es2025/modules/global_module.h"
+#include "spectre/es2025/modules/object_module.h"
+#include "spectre/es2025/modules/proxy_module.h"
 #include "spectre/es2025/modules/error_module.h"
 #include "spectre/es2025/modules/function_module.h"
 #include "spectre/es2025/modules/atomics_module.h"
@@ -1228,6 +1231,122 @@ namespace {
         return ok;
     }
 
+    bool ObjectModuleHandlesPrototypes() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        bool ok = ExpectTrue(runtime != nullptr, "Runtime created");
+        if (!runtime) {
+            return false;
+        }
+        auto &environment = runtime->EsEnvironment();
+        auto *modulePtr = environment.FindModule("Object");
+        auto *objectModule = dynamic_cast<spectre::es2025::ObjectModule *>(modulePtr);
+        ok &= ExpectTrue(objectModule != nullptr, "Object module available");
+        if (!objectModule) {
+            return false;
+        }
+        spectre::es2025::ObjectModule::Handle prototype = 0;
+        ok &= ExpectStatus(objectModule->Create("test.prototype", 0, prototype), StatusCode::Ok, "Create prototype");
+        spectre::es2025::ObjectModule::PropertyDescriptor descriptor;
+        descriptor.value = spectre::es2025::ObjectModule::Value::FromString("base");
+        descriptor.enumerable = true;
+        descriptor.configurable = true;
+        descriptor.writable = true;
+        ok &= ExpectStatus(objectModule->Define(prototype, "type", descriptor), StatusCode::Ok, "Define prototype property");
+        spectre::es2025::ObjectModule::Handle instance = 0;
+        ok &= ExpectStatus(objectModule->Create("test.instance", prototype, instance), StatusCode::Ok, "Create instance");
+        ok &= ExpectStatus(objectModule->Set(instance, "hp", spectre::es2025::ObjectModule::Value::FromInt(75)), StatusCode::Ok, "Set instance property");
+        spectre::es2025::ObjectModule::Value value;
+        ok &= ExpectStatus(objectModule->Get(instance, "hp", value), StatusCode::Ok, "Get instance property");
+        ok &= ExpectTrue(value.IsInt() && value.Int() == 75, "Instance value stored");
+        spectre::es2025::ObjectModule::Value protoValue;
+        ok &= ExpectStatus(objectModule->Get(instance, "type", protoValue), StatusCode::Ok, "Prototype lookup");
+        ok &= ExpectTrue(protoValue.IsString() && protoValue.String() == "base", "Prototype value accessible");
+        std::vector<std::string> keys;
+        ok &= ExpectStatus(objectModule->OwnKeys(instance, keys), StatusCode::Ok, "Enumerate keys");
+        ok &= ExpectTrue(std::find(keys.begin(), keys.end(), "hp") != keys.end(), "Own keys contain hp");
+        bool deleted = false;
+        ok &= ExpectStatus(objectModule->Delete(instance, "hp", deleted), StatusCode::Ok, "Delete property");
+        ok &= ExpectTrue(deleted, "Delete flagged");
+        ok &= ExpectStatus(objectModule->Seal(instance), StatusCode::Ok, "Seal instance");
+        ok &= ExpectTrue(objectModule->IsSealed(instance), "Instance sealed");
+        ok &= ExpectStatus(objectModule->Freeze(prototype), StatusCode::Ok, "Freeze prototype");
+        ok &= ExpectTrue(objectModule->IsFrozen(prototype), "Prototype frozen");
+        ok &= ExpectStatus(objectModule->Destroy(instance), StatusCode::Ok, "Destroy instance");
+        ok &= ExpectStatus(objectModule->Destroy(prototype), StatusCode::Ok, "Destroy prototype");
+        const auto &metrics = objectModule->GetMetrics();
+        ok &= ExpectTrue(metrics.propertyAdds >= 2, "Property add metric");
+        ok &= ExpectTrue(metrics.fastPathHits >= 1, "Fast hit metric");
+        return ok;
+    }
+
+    bool ProxyModuleCoordinatesTraps() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        bool ok = ExpectTrue(runtime != nullptr, "Runtime created");
+        if (!runtime) {
+            return false;
+        }
+        auto &environment = runtime->EsEnvironment();
+        auto *objectPtr = environment.FindModule("Object");
+        auto *objectModule = dynamic_cast<spectre::es2025::ObjectModule *>(objectPtr);
+        auto *proxyPtr = environment.FindModule("Proxy");
+        auto *proxyModule = dynamic_cast<spectre::es2025::ProxyModule *>(proxyPtr);
+        ok &= ExpectTrue(objectModule != nullptr, "Object module available");
+        ok &= ExpectTrue(proxyModule != nullptr, "Proxy module available");
+        if (!objectModule || !proxyModule) {
+            return false;
+        }
+        spectre::es2025::ObjectModule::Handle target = 0;
+        ok &= ExpectStatus(objectModule->Create("proxy.target", 0, target), StatusCode::Ok, "Create target");
+        ok &= ExpectStatus(objectModule->Set(target, "count", spectre::es2025::ObjectModule::Value::FromInt(1)), StatusCode::Ok, "Seed target count");
+        struct TrapState {
+            int gets;
+            int sets;
+            int deletes;
+        } state{0, 0, 0};
+        spectre::es2025::ProxyModule::TrapTable traps{};
+        traps.get = [](spectre::es2025::ObjectModule &objects, spectre::es2025::ObjectModule::Handle handle, std::string_view key, spectre::es2025::ObjectModule::Value &outValue, void *userdata) -> StatusCode {
+            auto *stats = static_cast<TrapState *>(userdata);
+            stats->gets += 1;
+            return objects.Get(handle, key, outValue);
+        };
+        traps.set = [](spectre::es2025::ObjectModule &objects, spectre::es2025::ObjectModule::Handle handle, std::string_view key, const spectre::es2025::ObjectModule::Value &value, void *userdata) -> StatusCode {
+            auto *stats = static_cast<TrapState *>(userdata);
+            stats->sets += 1;
+            return objects.Set(handle, key, value);
+        };
+        traps.drop = [](spectre::es2025::ObjectModule &objects, spectre::es2025::ObjectModule::Handle handle, std::string_view key, bool &removed, void *userdata) -> StatusCode {
+            auto *stats = static_cast<TrapState *>(userdata);
+            stats->deletes += 1;
+            return objects.Delete(handle, key, removed);
+        };
+        traps.userdata = &state;
+        spectre::es2025::ProxyModule::Handle proxy = 0;
+        ok &= ExpectStatus(proxyModule->Create(target, traps, proxy), StatusCode::Ok, "Create proxy");
+        spectre::es2025::ObjectModule::Value value;
+        ok &= ExpectStatus(proxyModule->Get(proxy, "count", value), StatusCode::Ok, "Proxy get");
+        ok &= ExpectTrue(value.IsInt() && value.Int() == 1, "Proxy get value");
+        ok &= ExpectStatus(proxyModule->Set(proxy, "count", spectre::es2025::ObjectModule::Value::FromInt(5)), StatusCode::Ok, "Proxy set");
+        bool hasCount = false;
+        ok &= ExpectStatus(proxyModule->Has(proxy, "count", hasCount), StatusCode::Ok, "Proxy has");
+        ok &= ExpectTrue(hasCount, "Proxy reports presence");
+        bool removed = false;
+        ok &= ExpectStatus(proxyModule->Delete(proxy, "count", removed), StatusCode::Ok, "Proxy delete");
+        ok &= ExpectTrue(removed, "Proxy delete flag");
+        std::vector<std::string> keys;
+        ok &= ExpectStatus(proxyModule->OwnKeys(proxy, keys), StatusCode::Ok, "Proxy keys");
+        ok &= ExpectTrue(keys.empty(), "Proxy keys empty");
+        ok &= ExpectStatus(proxyModule->Revoke(proxy), StatusCode::Ok, "Proxy revoke");
+        spectre::es2025::ObjectModule::Value revoked;
+        ok &= ExpectStatus(proxyModule->Get(proxy, "count", revoked), StatusCode::InvalidArgument, "Revoked proxy");
+        ok &= ExpectStatus(proxyModule->Destroy(proxy), StatusCode::Ok, "Destroy proxy");
+        ok &= ExpectStatus(objectModule->Destroy(target), StatusCode::Ok, "Destroy target");
+        ok &= ExpectTrue(state.gets >= 1 && state.sets >= 1 && state.deletes >= 1, "Trap counters updated");
+        const auto &metrics = proxyModule->GetMetrics();
+        ok &= ExpectTrue(metrics.trapHits >= 3, "Trap hits metric");
+        ok &= ExpectTrue(metrics.revocations >= 1, "Revocation metric");
+        return ok;
+    }
+
     struct TestCase {
         const char *name;
 
@@ -1268,6 +1387,8 @@ int main() {
         {"DateModuleConstructsAndFormats", DateModuleConstructsAndFormats},
         {"NumberModuleHandlesAggregates", NumberModuleHandlesAggregates},
         {"BigIntModulePerformsArithmetic", BigIntModulePerformsArithmetic},
+        {"ObjectModuleHandlesPrototypes", ObjectModuleHandlesPrototypes},
+        {"ProxyModuleCoordinatesTraps", ProxyModuleCoordinatesTraps},
         {"MathModuleAcceleratesWorkloads", MathModuleAcceleratesWorkloads},
         {"TickAndReconfigureUpdatesState", TickAndReconfigureUpdatesState}
     };
@@ -1288,6 +1409,12 @@ int main() {
     std::cout << "Executed " << passed << " / " << tests.size() << " tests" << std::endl;
     return 0;
 }
+
+
+
+
+
+
 
 
 

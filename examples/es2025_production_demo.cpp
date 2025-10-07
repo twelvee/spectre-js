@@ -1,4 +1,4 @@
-#include <fstream>
+﻿#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
@@ -12,6 +12,8 @@
 #include "spectre/status.h"
 #include "spectre/es2025/environment.h"
 #include "spectre/es2025/modules/global_module.h"
+#include "spectre/es2025/modules/object_module.h"
+#include "spectre/es2025/modules/proxy_module.h"
 #include "spectre/es2025/modules/error_module.h"
 #include "spectre/es2025/modules/function_module.h"
 #include "spectre/es2025/modules/atomics_module.h"
@@ -156,9 +158,9 @@ namespace {
         }
         const auto &metrics = arrayModule.GetMetrics();
         std::cout << "Array metrics summary: dense=" << metrics.denseCount
-                  << " sparse=" << metrics.sparseCount
-                  << " d2s=" << metrics.transitionsToSparse
-                  << " s2d=" << metrics.transitionsToDense << std::endl;
+                << " sparse=" << metrics.sparseCount
+                << " d2s=" << metrics.transitionsToSparse
+                << " s2d=" << metrics.transitionsToDense << std::endl;
     }
 
     void DemonstrateAtomicsModule(spectre::es2025::AtomicsModule &atomicsModule) {
@@ -207,13 +209,13 @@ namespace {
         }
         const auto &metrics = atomicsModule.Metrics();
         auto activeBuffers = metrics.allocations >= metrics.deallocations
-                               ? metrics.allocations - metrics.deallocations
-                               : 0;
+                                 ? metrics.allocations - metrics.deallocations
+                                 : 0;
         std::cout << "Atomics metrics: loads=" << metrics.loadOps
-                  << " stores=" << metrics.storeOps
-                  << " rmw=" << metrics.rmwOps
-                  << " buffers=" << activeBuffers
-                  << " hot=" << metrics.hotBuffers << std::endl;
+                << " stores=" << metrics.storeOps
+                << " rmw=" << metrics.rmwOps
+                << " buffers=" << activeBuffers
+                << " hot=" << metrics.hotBuffers << std::endl;
         cleanup();
     }
 
@@ -246,102 +248,100 @@ namespace {
         }
         const auto &metrics = booleanModule.Metrics();
         std::cout << "Boolean metrics: conversions=" << metrics.conversions
-                  << " allocations=" << metrics.allocations
-                  << " hot=" << metrics.hotBoxes << std::endl;
+                << " allocations=" << metrics.allocations
+                << " hot=" << metrics.hotBoxes << std::endl;
         std::cout.flags(originalFlags);
     }
-
-
-
 }
 
-    void DemonstrateStringModule(spectre::es2025::StringModule &stringModule) {
-        std::cout << "\nDemonstrating string module" << std::endl;
-        spectre::es2025::StringModule::Handle title = 0;
-        if (stringModule.Create("demo.title", "  spectre-js  ", title) != spectre::StatusCode::Ok) {
-            std::cout << "  unable to allocate base string" << std::endl;
-            return;
-        }
-
-        stringModule.TrimAscii(title);
-        stringModule.ToUpperAscii(title);
-        stringModule.Append(title, " ENGINE");
-
-        auto titleView = stringModule.View(title);
-        std::cout << "  title => " << titleView << std::endl;
-
-        spectre::es2025::StringModule::Handle slice = 0;
-        if (stringModule.Slice(title, 11, 6, "demo.slice", slice) == spectre::StatusCode::Ok) {
-            std::cout << "  slice => " << stringModule.View(slice) << std::endl;
-        }
-
-        spectre::es2025::StringModule::Handle intern = 0;
-        if (stringModule.Intern("spectre.hero", intern) == spectre::StatusCode::Ok) {
-            std::cout << "  intern => " << stringModule.View(intern) << std::endl;
-        }
-
-        const auto &metrics = stringModule.GetMetrics();
-        std::cout << "  metrics: allocations=" << metrics.allocations
-                  << " transforms=" << metrics.transforms
-                  << " internHits=" << metrics.internHits
-                  << " internMisses=" << metrics.internMisses << std::endl;
-
-        if (slice != 0) {
-            stringModule.Release(slice);
-        }
-        if (intern != 0) {
-            stringModule.Release(intern);
-        }
-        stringModule.Release(title);
+void DemonstrateStringModule(spectre::es2025::StringModule &stringModule) {
+    std::cout << "\nDemonstrating string module" << std::endl;
+    spectre::es2025::StringModule::Handle title = 0;
+    if (stringModule.Create("demo.title", "  spectre-js  ", title) != spectre::StatusCode::Ok) {
+        std::cout << "  unable to allocate base string" << std::endl;
+        return;
     }
 
-    void DemonstrateMathModule(spectre::es2025::MathModule &mathModule) {
-        std::cout << "\nDemonstrating math module" << std::endl;
-        auto originalFlags = std::cout.flags();
-        auto originalPrecision = std::cout.precision();
+    stringModule.TrimAscii(title);
+    stringModule.ToUpperAscii(title);
+    stringModule.Append(title, " ENGINE");
 
-        constexpr double angle = 0.78539816339;
-        double sinFast = mathModule.FastSin(angle);
-        double cosFast = mathModule.FastCos(angle);
-        double tanFast = mathModule.FastTan(angle);
-        float invSqrt = mathModule.FastInverseSqrt(256.0f);
-        double reduced = mathModule.ReduceAngle(10.0);
-        double lerpValue = mathModule.Lerp(-20.0, 20.0, 0.35);
+    auto titleView = stringModule.View(title);
+    std::cout << "  title => " << titleView << std::endl;
 
-        double lhs3[3] = {1.0, 2.0, 3.0};
-        double rhs3[3] = {4.0, 5.0, 6.0};
-        double dot3 = mathModule.Dot3(lhs3, rhs3);
-
-        double fmaA[4] = {1.0, 2.0, 3.0, 4.0};
-        double fmaB[4] = {0.5, -0.25, 0.75, -1.0};
-        double fmaC[4] = {0.0, 0.5, -0.5, 1.0};
-        double fmaOut[4] = {0.0, 0.0, 0.0, 0.0};
-        mathModule.BatchedFma(fmaA, fmaB, fmaC, fmaOut, 4);
-
-        std::cout << std::fixed << std::setprecision(5);
-        std::cout << "  angle=" << angle
-                  << " sin=" << sinFast
-                  << " cos=" << cosFast
-                  << " tan=" << tanFast << std::endl;
-        std::cout << "  invsqrt(256)=" << invSqrt
-                  << " reduced=" << reduced
-                  << " lerp=" << lerpValue << std::endl;
-        std::cout << "  dot3 => " << dot3 << std::endl;
-        std::cout << "  fma lanes => ["
-                  << fmaOut[0] << ", "
-                  << fmaOut[1] << ", "
-                  << fmaOut[2] << ", "
-                  << fmaOut[3] << "]" << std::endl;
-
-        const auto &metrics = mathModule.GetMetrics();
-        std::cout << "  metrics: sinCalls=" << metrics.fastSinCalls
-                  << " cosCalls=" << metrics.fastCosCalls
-                  << " tanCalls=" << metrics.fastTanCalls
-                  << " fmaOps=" << metrics.batchedFmaOps << std::endl;
-
-        std::cout.flags(originalFlags);
-        std::cout.precision(originalPrecision);
+    spectre::es2025::StringModule::Handle slice = 0;
+    if (stringModule.Slice(title, 11, 6, "demo.slice", slice) == spectre::StatusCode::Ok) {
+        std::cout << "  slice => " << stringModule.View(slice) << std::endl;
     }
+
+    spectre::es2025::StringModule::Handle intern = 0;
+    if (stringModule.Intern("spectre.hero", intern) == spectre::StatusCode::Ok) {
+        std::cout << "  intern => " << stringModule.View(intern) << std::endl;
+    }
+
+    const auto &metrics = stringModule.GetMetrics();
+    std::cout << "  metrics: allocations=" << metrics.allocations
+            << " transforms=" << metrics.transforms
+            << " internHits=" << metrics.internHits
+            << " internMisses=" << metrics.internMisses << std::endl;
+
+    if (slice != 0) {
+        stringModule.Release(slice);
+    }
+    if (intern != 0) {
+        stringModule.Release(intern);
+    }
+    stringModule.Release(title);
+}
+
+void DemonstrateMathModule(spectre::es2025::MathModule &mathModule) {
+    std::cout << "\nDemonstrating math module" << std::endl;
+    auto originalFlags = std::cout.flags();
+    auto originalPrecision = std::cout.precision();
+
+    constexpr double angle = 0.78539816339;
+    double sinFast = mathModule.FastSin(angle);
+    double cosFast = mathModule.FastCos(angle);
+    double tanFast = mathModule.FastTan(angle);
+    float invSqrt = mathModule.FastInverseSqrt(256.0f);
+    double reduced = mathModule.ReduceAngle(10.0);
+    double lerpValue = mathModule.Lerp(-20.0, 20.0, 0.35);
+
+    double lhs3[3] = {1.0, 2.0, 3.0};
+    double rhs3[3] = {4.0, 5.0, 6.0};
+    double dot3 = mathModule.Dot3(lhs3, rhs3);
+
+    double fmaA[4] = {1.0, 2.0, 3.0, 4.0};
+    double fmaB[4] = {0.5, -0.25, 0.75, -1.0};
+    double fmaC[4] = {0.0, 0.5, -0.5, 1.0};
+    double fmaOut[4] = {0.0, 0.0, 0.0, 0.0};
+    mathModule.BatchedFma(fmaA, fmaB, fmaC, fmaOut, 4);
+
+    std::cout << std::fixed << std::setprecision(5);
+    std::cout << "  angle=" << angle
+            << " sin=" << sinFast
+            << " cos=" << cosFast
+            << " tan=" << tanFast << std::endl;
+    std::cout << "  invsqrt(256)=" << invSqrt
+            << " reduced=" << reduced
+            << " lerp=" << lerpValue << std::endl;
+    std::cout << "  dot3 => " << dot3 << std::endl;
+    std::cout << "  fma lanes => ["
+            << fmaOut[0] << ", "
+            << fmaOut[1] << ", "
+            << fmaOut[2] << ", "
+            << fmaOut[3] << "]" << std::endl;
+
+    const auto &metrics = mathModule.GetMetrics();
+    std::cout << "  metrics: sinCalls=" << metrics.fastSinCalls
+            << " cosCalls=" << metrics.fastCosCalls
+            << " tanCalls=" << metrics.fastTanCalls
+            << " fmaOps=" << metrics.batchedFmaOps << std::endl;
+
+    std::cout.flags(originalFlags);
+    std::cout.precision(originalPrecision);
+}
+
 void DemonstrateDateModule(spectre::es2025::DateModule &dateModule) {
     std::cout << "\nDemonstrating date module" << std::endl;
     spectre::es2025::DateModule::Handle nowHandle = 0;
@@ -370,8 +370,8 @@ void DemonstrateDateModule(spectre::es2025::DateModule &dateModule) {
     std::cout << std::fixed << std::setprecision(3);
     std::cout << "  now => " << iso << std::endl;
     std::cout << "  now components => year=" << components.year
-              << " day=" << components.day
-              << " weekday=" << components.dayOfWeek << std::endl;
+            << " day=" << components.day
+            << " weekday=" << components.dayOfWeek << std::endl;
     std::cout << "  launch => " << shiftedIso << " (delta " << deltaMs << " ms)" << std::endl;
     std::cout.flags(preservedFlags);
     std::cout.precision(preservedPrecision);
@@ -379,6 +379,7 @@ void DemonstrateDateModule(spectre::es2025::DateModule &dateModule) {
     dateModule.Destroy(launchHandle);
     dateModule.Destroy(nowHandle);
 }
+
 void DemonstrateNumberModule(spectre::es2025::NumberModule &numberModule) {
     std::cout << "\nDemonstrating number module" << std::endl;
     auto preservedFlags = std::cout.flags();
@@ -399,12 +400,12 @@ void DemonstrateNumberModule(spectre::es2025::NumberModule &numberModule) {
     auto canonicalZero = numberModule.Canonical(0.0);
     std::cout << std::fixed << std::setprecision(3);
     std::cout << "  peak => " << numberModule.ValueOf(peak)
-              << " normalized mean=" << summary.mean
-              << " variance=" << summary.variance << std::endl;
+            << " normalized mean=" << summary.mean
+            << " variance=" << summary.variance << std::endl;
     const auto &metrics = numberModule.GetMetrics();
     std::cout << "  metrics: allocations=" << metrics.allocations
-              << " mutations=" << metrics.mutations
-              << " accumulations=" << metrics.accumulations << std::endl;
+            << " mutations=" << metrics.mutations
+            << " accumulations=" << metrics.accumulations << std::endl;
     std::cout << "  canonical zero handle=" << canonicalZero << std::endl;
     numberModule.Destroy(peak);
     std::cout.flags(preservedFlags);
@@ -430,11 +431,115 @@ void DemonstrateBigIntModule(spectre::es2025::BigIntModule &bigintModule) {
     std::cout << "  compare sign=" << comparison.sign << " digits=" << comparison.digits << std::endl;
     const auto &metrics = bigintModule.GetMetrics();
     std::cout << "  metrics: allocations=" << metrics.allocations
-              << " additions=" << metrics.additions
-              << " multiplications=" << metrics.multiplications << std::endl;
+            << " additions=" << metrics.additions
+            << " multiplications=" << metrics.multiplications << std::endl;
     bigintModule.Destroy(delta);
     bigintModule.Destroy(base);
 }
+
+void DemonstrateObjectModule(spectre::es2025::ObjectModule &objectModule) {
+    std::cout << "\nDemonstrating Object module" << std::endl;
+    spectre::es2025::ObjectModule::Handle prototype = 0;
+    if (objectModule.Create("demo.prototype", 0, prototype) != spectre::StatusCode::Ok) {
+        std::cout << "  object prototype unavailable" << std::endl;
+        return;
+    }
+    spectre::es2025::ObjectModule::PropertyDescriptor descriptor;
+    descriptor.value = spectre::es2025::ObjectModule::Value::FromString("entity");
+    descriptor.enumerable = true;
+    descriptor.configurable = true;
+    descriptor.writable = true;
+    objectModule.Define(prototype, "type", descriptor);
+    spectre::es2025::ObjectModule::Handle instance = 0;
+    if (objectModule.Create("demo.instance", prototype, instance) != spectre::StatusCode::Ok) {
+        objectModule.Destroy(prototype);
+        std::cout << "  object instance unavailable" << std::endl;
+        return;
+    }
+    objectModule.Set(instance, "hp", spectre::es2025::ObjectModule::Value::FromInt(240));
+    objectModule.Set(instance, "name", spectre::es2025::ObjectModule::Value::FromString("spectre-npc"));
+    std::vector<std::string> keys;
+    if (objectModule.OwnKeys(instance, keys) == spectre::StatusCode::Ok) {
+        std::cout << "  own keys:";
+        for (const auto &key: keys) {
+            std::cout << " " << key;
+        }
+        std::cout << std::endl;
+    }
+    spectre::es2025::ObjectModule::Value protoValue;
+    if (objectModule.Get(instance, "type", protoValue) == spectre::StatusCode::Ok && protoValue.IsString()) {
+        std::cout << "  prototype type => " << protoValue.String() << std::endl;
+    }
+    objectModule.Destroy(instance);
+    objectModule.Destroy(prototype);
+}
+
+void DemonstrateProxyModule(spectre::es2025::ObjectModule &objectModule, spectre::es2025::ProxyModule &proxyModule) {
+    std::cout << "\nDemonstrating Proxy module" << std::endl;
+    spectre::es2025::ObjectModule::Handle target = 0;
+    if (objectModule.Create("demo.proxy.target", 0, target) != spectre::StatusCode::Ok) {
+        std::cout << "  proxy target unavailable" << std::endl;
+        return;
+    }
+    objectModule.Set(target, "count", spectre::es2025::ObjectModule::Value::FromInt(3));
+    struct ProxyState {
+        int gets;
+        int sets;
+        int deletes;
+    } state{0, 0, 0};
+    spectre::es2025::ProxyModule::TrapTable traps{};
+    traps.get = [](spectre::es2025::ObjectModule &objects, spectre::es2025::ObjectModule::Handle handle,
+                   std::string_view key, spectre::es2025::ObjectModule::Value &outValue,
+                   void *userdata) -> spectre::StatusCode {
+        auto *stats = static_cast<ProxyState *>(userdata);
+        stats->gets += 1;
+        return objects.Get(handle, key, outValue);
+    };
+    traps.set = [](spectre::es2025::ObjectModule &objects, spectre::es2025::ObjectModule::Handle handle,
+                   std::string_view key, const spectre::es2025::ObjectModule::Value &value,
+                   void *userdata) -> spectre::StatusCode {
+        auto *stats = static_cast<ProxyState *>(userdata);
+        stats->sets += 1;
+        return objects.Set(handle, key, value);
+    };
+    traps.drop = [](spectre::es2025::ObjectModule &objects, spectre::es2025::ObjectModule::Handle handle,
+                    std::string_view key, bool &removed, void *userdata) -> spectre::StatusCode {
+        auto *stats = static_cast<ProxyState *>(userdata);
+        stats->deletes += 1;
+        return objects.Delete(handle, key, removed);
+    };
+    traps.userdata = &state;
+    spectre::es2025::ProxyModule::Handle proxy = 0;
+    if (proxyModule.Create(target, traps, proxy) != spectre::StatusCode::Ok) {
+        objectModule.Destroy(target);
+        std::cout << "  proxy instance unavailable" << std::endl;
+        return;
+    }
+    spectre::es2025::ObjectModule::Value value;
+    if (proxyModule.Get(proxy, "count", value) == spectre::StatusCode::Ok && value.IsInt()) {
+        std::cout << "  initial count => " << value.Int() << std::endl;
+    }
+    proxyModule.Set(proxy, "count", spectre::es2025::ObjectModule::Value::FromInt(7));
+    bool hasCount = false;
+    proxyModule.Has(proxy, "count", hasCount);
+    std::cout << "  has count => " << (hasCount ? "true" : "false") << std::endl;
+    bool removed = false;
+    proxyModule.Delete(proxy, "count", removed);
+    std::cout << "  delete count => " << (removed ? "true" : "false") << std::endl;
+    std::vector<std::string> keys;
+    proxyModule.OwnKeys(proxy, keys);
+    std::cout << "  keys:";
+    for (const auto &key: keys) {
+        std::cout << " " << key;
+    }
+    std::cout << std::endl;
+    proxyModule.Revoke(proxy);
+    proxyModule.Destroy(proxy);
+    objectModule.Destroy(target);
+    std::cout << "  traps counts => get:" << state.gets << " set:" << state.sets << " delete:" << state.deletes <<
+            std::endl;
+}
+
 int main() {
     using namespace spectre;
 
@@ -454,6 +559,20 @@ int main() {
     auto *globalModule = dynamic_cast<es2025::GlobalModule *>(globalModulePtr);
     if (!globalModule) {
         std::cerr << "Global module unavailable" << std::endl;
+        return 1;
+    }
+
+    auto *objectModulePtr = environment.FindModule("Object");
+    auto *objectModule = dynamic_cast<es2025::ObjectModule *>(objectModulePtr);
+    if (!objectModule) {
+        std::cerr << "Object module unavailable" << std::endl;
+        return 1;
+    }
+
+    auto *proxyModulePtr = environment.FindModule("Proxy");
+    auto *proxyModule = dynamic_cast<es2025::ProxyModule *>(proxyModulePtr);
+    if (!proxyModule) {
+        std::cerr << "Proxy module unavailable" << std::endl;
         return 1;
     }
 
@@ -553,6 +672,8 @@ int main() {
     DemonstrateDateModule(*dateModule);
     DemonstrateNumberModule(*numberModule);
     DemonstrateBigIntModule(*bigintModule);
+    DemonstrateObjectModule(*objectModule);
+    DemonstrateProxyModule(*objectModule, *proxyModule);
 
     std::cout << "\nDemonstrating error capture" << std::endl;
     std::string failingValue;
@@ -562,7 +683,8 @@ int main() {
         std::string formatted;
         errorModule->RaiseError("SyntaxError",
                                 failingDiagnostics.empty() ? "Script parsing failed" : failingDiagnostics,
-                                globalModule->DefaultContext(), "invalid-script", failingDiagnostics, formatted, nullptr);
+                                globalModule->DefaultContext(), "invalid-script", failingDiagnostics, formatted,
+                                nullptr);
         std::cout << "  captured => " << formatted << std::endl;
     }
 
@@ -592,23 +714,3 @@ int main() {
     std::cout << "\nES2025 production scaffold ready" << std::endl;
     return 0;
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
