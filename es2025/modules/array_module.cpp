@@ -1,13 +1,11 @@
 #include "spectre/es2025/modules/array_module.h"
 
 #include <algorithm>
-#include <array>
-#include <charconv>
 #include <cmath>
 #include <iterator>
 #include <limits>
 #include <numeric>
-#include <system_error>
+#include <sstream>
 #include <utility>
 
 #include "spectre/runtime.h"
@@ -85,13 +83,11 @@ namespace spectre::es2025 {
             case Kind::Undefined:
                 return "undefined";
             case Kind::Number: {
-                std::array<char, 64> buffer{};
-                auto result = std::to_chars(buffer.data(), buffer.data() + buffer.size(), number,
-                                             std::chars_format::general, 17);
-                if (result.ec == std::errc()) {
-                    return std::string(buffer.data(), static_cast<std::size_t>(result.ptr - buffer.data()));
-                }
-                return std::to_string(number);
+                std::ostringstream stream;
+                stream.setf(std::ios::fmtflags(0), std::ios::floatfield);
+                stream.precision(17);
+                stream << number;
+                return stream.str();
             }
             case Kind::Boolean:
                 return booleanValue ? "true" : "false";
@@ -173,7 +169,7 @@ namespace spectre::es2025 {
 
     void ArrayModule::Tick(const TickInfo &info, const ModuleTickContext &) noexcept {
         m_CurrentFrame = info.frameIndex;
-        for (auto &slot : m_Slots) {
+        for (auto &slot: m_Slots) {
             if (!slot.inUse) {
                 continue;
             }
@@ -222,8 +218,9 @@ namespace spectre::es2025 {
         }
         StatusCode status = CreateInternal(label,
                                            source->kind,
-                                           source->kind == StorageKind::Dense ? source->dense.items.capacity()
-                                                                              : source->sparse.entries.size(),
+                                           source->kind == StorageKind::Dense
+                                               ? source->dense.items.capacity()
+                                               : source->sparse.entries.size(),
                                            outHandle);
         if (status != StatusCode::Ok) {
             return status;
@@ -298,9 +295,10 @@ namespace spectre::es2025 {
         } else {
             auto previous = record->sparse.entries.size();
             record->sparse.entries.push_back({record->length, value});
-            std::sort(record->sparse.entries.begin(), record->sparse.entries.end(), [](const SparseEntry &lhs, const SparseEntry &rhs) {
-                return lhs.index < rhs.index;
-            });
+            std::sort(record->sparse.entries.begin(), record->sparse.entries.end(),
+                      [](const SparseEntry &lhs, const SparseEntry &rhs) {
+                          return lhs.index < rhs.index;
+                      });
             auto current = record->sparse.entries.size();
             UpdateSparseEntryCount(*record, previous, current);
             record->sparse.maxIndex = record->sparse.entries.empty() ? 0 : record->sparse.entries.back().index;
@@ -358,6 +356,7 @@ namespace spectre::es2025 {
         Touch(*record);
         return StatusCode::Ok;
     }
+
     StatusCode ArrayModule::Shift(Handle handle, Value &outValue) {
         auto *record = FindMutable(handle);
         if (record == nullptr) {
@@ -389,7 +388,7 @@ namespace spectre::es2025 {
         auto previous = entries.size();
         outValue = entries.front().value;
         entries.erase(entries.begin());
-        for (auto &entry : entries) {
+        for (auto &entry: entries) {
             entry.index -= 1;
         }
         UpdateSparseEntryCount(*record, previous, entries.size());
@@ -422,7 +421,7 @@ namespace spectre::es2025 {
         } else {
             auto &entries = record->sparse.entries;
             auto previous = entries.size();
-            for (auto &entry : entries) {
+            for (auto &entry: entries) {
                 entry.index += 1;
             }
             entries.insert(entries.begin(), SparseEntry{0, value});
@@ -452,9 +451,10 @@ namespace spectre::es2025 {
             return StatusCode::Ok;
         }
         const auto &entries = record->sparse.entries;
-        auto it = std::lower_bound(entries.begin(), entries.end(), index, [](const SparseEntry &entry, std::size_t value) {
-            return entry.index < value;
-        });
+        auto it = std::lower_bound(entries.begin(), entries.end(), index,
+                                   [](const SparseEntry &entry, std::size_t value) {
+                                       return entry.index < value;
+                                   });
         if (it == entries.end() || it->index != index) {
             outValue = Value::Undefined();
             return StatusCode::NotFound;
@@ -483,9 +483,10 @@ namespace spectre::es2025 {
         }
         auto &entries = record->sparse.entries;
         auto previous = entries.size();
-        auto it = std::lower_bound(entries.begin(), entries.end(), index, [](const SparseEntry &entry, std::size_t value) {
-            return entry.index < value;
-        });
+        auto it = std::lower_bound(entries.begin(), entries.end(), index,
+                                   [](const SparseEntry &entry, std::size_t value) {
+                                       return entry.index < value;
+                                   });
         if (it != entries.end() && it->index == index) {
             it->value = value;
         } else {
@@ -519,14 +520,15 @@ namespace spectre::es2025 {
             return StatusCode::NotFound;
         }
         auto previous = entries.size();
-        auto it = std::lower_bound(entries.begin(), entries.end(), index, [](const SparseEntry &entry, std::size_t value) {
-            return entry.index < value;
-        });
+        auto it = std::lower_bound(entries.begin(), entries.end(), index,
+                                   [](const SparseEntry &entry, std::size_t value) {
+                                       return entry.index < value;
+                                   });
         if (it == entries.end() || it->index != index) {
             return StatusCode::NotFound;
         }
         entries.erase(it);
-        for (auto &entry : entries) {
+        for (auto &entry: entries) {
             if (entry.index > index) {
                 entry.index -= 1;
             }
@@ -547,7 +549,7 @@ namespace spectre::es2025 {
             ConvertToDense(*record);
         }
         auto &items = record->dense.items;
-        for (auto &entry : items) {
+        for (auto &entry: items) {
             entry = value;
         }
         Touch(*record);
@@ -623,14 +625,15 @@ namespace spectre::es2025 {
             }
             buffer.push_back(value);
         }
-        for (const auto &entry : buffer) {
+        for (const auto &entry: buffer) {
             Push(destination, entry);
         }
         Touch(*dst);
         return StatusCode::Ok;
     }
 
-    StatusCode ArrayModule::Slice(Handle handle, std::size_t begin, std::size_t end, std::vector<Value> &outValues) const {
+    StatusCode ArrayModule::Slice(Handle handle, std::size_t begin, std::size_t end,
+                                  std::vector<Value> &outValues) const {
         auto *record = Find(handle);
         if (record == nullptr) {
             outValues.clear();
@@ -693,7 +696,9 @@ namespace spectre::es2025 {
         Touch(*record);
         return StatusCode::Ok;
     }
-    StatusCode ArrayModule::BinarySearch(Handle handle, const Value &needle, bool numeric, std::size_t &outIndex) const {
+
+    StatusCode ArrayModule::BinarySearch(Handle handle, const Value &needle, bool numeric,
+                                         std::size_t &outIndex) const {
         auto *record = Find(handle);
         outIndex = std::numeric_limits<std::size_t>::max();
         if (record == nullptr) {
@@ -793,7 +798,8 @@ namespace spectre::es2025 {
         return (static_cast<Handle>(generation) << 32) | static_cast<Handle>(slot);
     }
 
-    StatusCode ArrayModule::CreateInternal(std::string_view label, StorageKind kind, std::size_t capacityHint, Handle &outHandle) {
+    StatusCode ArrayModule::CreateInternal(std::string_view label, StorageKind kind, std::size_t capacityHint,
+                                           Handle &outHandle) {
         std::uint32_t slotIndex;
         if (!m_FreeSlots.empty()) {
             slotIndex = m_FreeSlots.back();
@@ -812,12 +818,15 @@ namespace spectre::es2025 {
         slot.generation = 1;
         m_Slots.push_back(slot);
         outHandle = EncodeHandle(slotIndex, m_Slots[slotIndex].generation);
-        ResetRecord(m_Slots[slotIndex].record, kind, label, capacityHint, outHandle, slotIndex, m_Slots[slotIndex].generation);
+        ResetRecord(m_Slots[slotIndex].record, kind, label, capacityHint, outHandle, slotIndex,
+                    m_Slots[slotIndex].generation);
         UpdateMetricsOnCreate(m_Slots[slotIndex].record);
         return StatusCode::Ok;
     }
 
-    void ArrayModule::ResetRecord(ArrayRecord &record, StorageKind kind, std::string_view label, std::size_t capacityHint, Handle handle, std::uint32_t slot, std::uint32_t generation) {
+    void ArrayModule::ResetRecord(ArrayRecord &record, StorageKind kind, std::string_view label,
+                                  std::size_t capacityHint, Handle handle, std::uint32_t slot,
+                                  std::uint32_t generation) {
         record.handle = handle;
         record.slot = slot;
         record.generation = generation;
@@ -961,9 +970,10 @@ namespace spectre::es2025 {
         record.kind = StorageKind::Sparse;
         auto previous = record.sparse.entries.size();
         record.sparse.entries = std::move(entries);
-        std::sort(record.sparse.entries.begin(), record.sparse.entries.end(), [](const SparseEntry &lhs, const SparseEntry &rhs) {
-            return lhs.index < rhs.index;
-        });
+        std::sort(record.sparse.entries.begin(), record.sparse.entries.end(),
+                  [](const SparseEntry &lhs, const SparseEntry &rhs) {
+                      return lhs.index < rhs.index;
+                  });
         UpdateSparseEntryCount(record, previous, record.sparse.entries.size());
         record.sparse.maxIndex = record.sparse.entries.empty() ? 0 : record.sparse.entries.back().index;
         UpdateLength(record, record.sparse.entries.empty() ? 0 : record.sparse.maxIndex + 1);
@@ -982,7 +992,7 @@ namespace spectre::es2025 {
         std::vector<Value> dense;
         dense.reserve(desiredCapacity);
         dense.resize(targetLength, Value::Undefined());
-        for (const auto &entry : record.sparse.entries) {
+        for (const auto &entry: record.sparse.entries) {
             if (entry.index < dense.size()) {
                 dense[entry.index] = entry.value;
             }
@@ -1021,19 +1031,22 @@ namespace spectre::es2025 {
         record.dense.items.swap(compacted);
         UpdateMetricsOnResizeDense(previousCapacity, record.dense.items.capacity());
     }
+
     void ArrayModule::CompactSparse(ArrayRecord &record) {
         if (record.sparse.entries.empty()) {
             record.sparse.maxIndex = 0;
             UpdateLength(record, 0);
             return;
         }
-        std::sort(record.sparse.entries.begin(), record.sparse.entries.end(), [](const SparseEntry &lhs, const SparseEntry &rhs) {
-            return lhs.index < rhs.index;
-        });
+        std::sort(record.sparse.entries.begin(), record.sparse.entries.end(),
+                  [](const SparseEntry &lhs, const SparseEntry &rhs) {
+                      return lhs.index < rhs.index;
+                  });
         auto previous = record.sparse.entries.size();
-        auto endIt = std::unique(record.sparse.entries.begin(), record.sparse.entries.end(), [](const SparseEntry &lhs, const SparseEntry &rhs) {
-            return lhs.index == rhs.index;
-        });
+        auto endIt = std::unique(record.sparse.entries.begin(), record.sparse.entries.end(),
+                                 [](const SparseEntry &lhs, const SparseEntry &rhs) {
+                                     return lhs.index == rhs.index;
+                                 });
         record.sparse.entries.erase(endIt, record.sparse.entries.end());
         UpdateSparseEntryCount(record, previous, record.sparse.entries.size());
         record.sparse.maxIndex = record.sparse.entries.empty() ? 0 : record.sparse.entries.back().index;
@@ -1112,8 +1125,10 @@ namespace spectre::es2025 {
         if (value.kind != Value::Kind::String) {
             return false;
         }
-        double result;
-        return std::from_chars(value.text.data(), value.text.data() + value.text.size(), result).ec == std::errc();
+        std::istringstream stream(value.text);
+        double parsed{};
+        stream >> parsed;
+        return stream && stream.peek() == std::char_traits<char>::eof();
     }
 
     double ArrayModule::ResolveNumeric(const Value &value, double fallback) noexcept {
@@ -1123,9 +1138,10 @@ namespace spectre::es2025 {
             case Value::Kind::Boolean:
                 return value.booleanValue ? 1.0 : 0.0;
             case Value::Kind::String: {
-                double parsed = 0.0;
-                auto ec = std::from_chars(value.text.data(), value.text.data() + value.text.size(), parsed).ec;
-                if (ec == std::errc()) {
+                std::istringstream stream(value.text);
+                double parsed{};
+                stream >> parsed;
+                if (stream && stream.peek() == std::char_traits<char>::eof()) {
                     return parsed;
                 }
                 return fallback;

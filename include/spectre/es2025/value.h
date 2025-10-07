@@ -1,11 +1,9 @@
 #pragma once
 
-#include <array>
-#include <charconv>
 #include <cstdint>
+#include <sstream>
 #include <string>
 #include <string_view>
-#include <system_error>
 
 namespace spectre::es2025 {
     struct Value {
@@ -44,12 +42,11 @@ namespace spectre::es2025 {
                 case Kind::Undefined:
                     return "undefined";
                 case Kind::Number: {
-                    std::array<char, 64> buffer{};
-                    auto result = std::to_chars(buffer.data(), buffer.data() + buffer.size(), number, std::chars_format::general, 17);
-                    if (result.ec == std::errc()) {
-                        return std::string(buffer.data(), static_cast<std::size_t>(result.ptr - buffer.data()));
-                    }
-                    return std::to_string(number);
+                    std::ostringstream stream;
+                    stream.setf(std::ios::fmtflags(0), std::ios::floatfield);
+                    stream.precision(17);
+                    stream << number;
+                    return stream.str();
                 }
                 case Kind::Boolean:
                     return booleanValue ? "true" : "false";
