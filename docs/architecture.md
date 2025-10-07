@@ -97,6 +97,19 @@ Mode selection is hot-swappable at runtime via `SpectreRuntime::reconfigure` whi
 - Monotonic frame allocator for transient objects, reset after each frame.
 - Inline caches and bytecode quickening to reduce dispatch overhead.
 - Predictive branch hinting using offline profile guides.
+#### Baseline CPU Pipeline
+- Incremental lexer emits compact `ParsedToken` arrays with literal pools to keep hot data cache resident.
+- Pratt-style expression compilation lowers return statements into stack-based instruction streams with deduplicated constant pools.
+- The single-thread mode owns dedicated parser, bytecode, and execution backends to avoid cross-context contention.
+
+#### Bytecode Serialization (`SJSB`)
+- Serialized programs carry the `SJSB` signature, a format version, 64-bit program version, bytecode payload, and constant tables.
+- Layout stays little-endian to align with the host ABI; payload bounds are validated before playback to prevent corrupt modules from executing.
+
+#### Execution Behavior
+- A lean stack-based interpreter executes five value kinds (number, boolean, null, undefined, string) and surfaces diagnostics alongside return values.
+- Numeric paths remain in double precision, detect division-by-zero, and reuse constant-pool storage for string results to minimize heap churn.
+
 
 ### Multi Thread Mode
 
@@ -111,6 +124,11 @@ Mode selection is hot-swappable at runtime via `SpectreRuntime::reconfigure` whi
 - Uses LLVM-based pipeline with NVPTX and SPIR-V backends.
 - GPU memory manager stages JS typed arrays into device buffers with double buffering.
 - Deterministic kernel completion deadlines enforced with hardware timers.
+#### Planned Integration Path
+- The baseline bytecode format intentionally describes straight-line arithmetic that can be reinterpreted as GPU kernels without rewriting host-side scheduling.
+- Kernel candidates will be discovered via interpreter telemetry; stable constant pools allow zero-copy promotion into shared GPU buffers.
+- Control stays on the CPU, while the GPU executes batched arithmetic/typed-array workloads behind deterministic fences aligned with frame ticks.
+
 
 ## Optimization Strategies
 
@@ -157,6 +175,9 @@ Mode selection is hot-swappable at runtime via `SpectreRuntime::reconfigure` whi
 ## Coding Standards
 
 See `docs/coding_conventions.md` for naming, error handling, and object model rules that all runtime and embedding code must follow.
+
+
+
 
 
 

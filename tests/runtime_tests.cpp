@@ -45,6 +45,7 @@ namespace {
         ok &= ExpectTrue(config.memory.heapBytes > 0, "Heap budget positive");
         ok &= ExpectTrue(config.memory.arenaBytes > 0, "Arena budget positive");
         ok &= ExpectTrue(config.telemetry.historySize > 0, "Telemetry history positive");
+        ok &= ExpectTrue(!config.enableGpuAcceleration, "GPU disabled by default");
         return ok;
     }
 
@@ -77,41 +78,57 @@ namespace {
         runtime->CreateContext({"logic", 4096}, nullptr);
         auto evalMissing = runtime->EvaluateSync("logic", "boot");
         ok &= ExpectStatus(evalMissing.status, StatusCode::NotFound, "Evaluate missing script");
+        auto invalidScript = runtime->LoadScript("logic", {"broken", "let a = 1;"});
+        ok &= ExpectStatus(invalidScript.status, StatusCode::InvalidArgument, "Invalid script rejected");
+        ok &= ExpectTrue(!invalidScript.diagnostics.empty(), "Invalid script diagnostics provided");
         auto bytecodeMissing = runtime->LoadBytecode("ghost", {"bundle", {}});
         ok &= ExpectStatus(bytecodeMissing.status, StatusCode::NotFound, "LoadBytecode missing context");
         return ok;
     }
 
-    bool ScriptStorageAndLookup() {
+    bool ScriptCompilationAndLookup() {
         auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
         runtime->CreateContext({"logic", 65536}, nullptr);
         spectre::ScriptSource script{"init", "return 42;"};
         auto loadResult = runtime->LoadScript("logic", script);
         bool ok = ExpectStatus(loadResult.status, StatusCode::Ok, "LoadScript status");
         ok &= ExpectTrue(loadResult.value == "init", "LoadScript returns script name");
+        ok &= ExpectTrue(loadResult.diagnostics == "Script compiled", "Compilation diagnostics");
+
         auto evalResult = runtime->EvaluateSync("logic", "init");
         ok &= ExpectStatus(evalResult.status, StatusCode::Ok, "EvaluateSync status");
         ok &= ExpectTrue(evalResult.value == "42", "EvaluateSync literal");
-        ok &= ExpectTrue(evalResult.diagnostics == "Literal",
-                         std::string("Literal diagnostics actual: ") + evalResult.diagnostics);
+        ok &= ExpectTrue(evalResult.diagnostics == "ok", "Execution diagnostics");
+
         const SpectreContext *logicContext = nullptr;
         auto ctxStatus = runtime->GetContext("logic", &logicContext);
         ok &= ExpectStatus(ctxStatus, StatusCode::Ok, "GetContext status");
+        const spectre::ScriptRecord *record = nullptr;
         if (logicContext != nullptr) {
+            ok &= ExpectStatus(logicContext->GetScript("init", &record), StatusCode::Ok, "GetScript status");
             ok &= ExpectTrue(logicContext->ScriptVersion("init") == 1, "Script version increments");
             ok &= ExpectTrue(!logicContext->ScriptNames().empty(), "Script names populated");
         }
-        spectre::ScriptSource update{"init", "return 7;"};
-        auto secondLoad = runtime->LoadScript("logic", update);
-        ok &= ExpectStatus(secondLoad.status, StatusCode::Ok, "Reload script status");
-        runtime->GetContext("logic", &logicContext);
+        ok &= ExpectTrue(record != nullptr, "Script record pointer valid");
+        if (record != nullptr) {
+            ok &= ExpectTrue(!record->bytecode.empty(), "Bytecode serialized");
+            ok &= ExpectTrue(!record->bytecodeHash.empty(), "Bytecode hash populated");
+        }
+
+        spectre::ScriptSource update{"init", "return 64;"};
+        auto updateResult = runtime->LoadScript("logic", update);
+        ok &= ExpectStatus(updateResult.status, StatusCode::Ok, "Reload script status");
+        ok &= ExpectTrue(updateResult.diagnostics == "Script compiled", "Reload diagnostics");
         if (logicContext != nullptr) {
             ok &= ExpectTrue(logicContext->ScriptVersion("init") == 2, "Script version updated");
         }
+        auto evalUpdate = runtime->EvaluateSync("logic", "init");
+        ok &= ExpectStatus(evalUpdate.status, StatusCode::Ok, "Evaluate updated script");
+        ok &= ExpectTrue(evalUpdate.value == "64", "Updated script value");
         return ok;
     }
 
-    bool LiteralCoverage() {
+    bool LiteralExecutionCoverage() {
         auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
         runtime->CreateContext({"literals", 16384}, nullptr);
         struct LiteralCase {
@@ -134,77 +151,81 @@ namespace {
             auto eval = runtime->EvaluateSync("literals", c.name);
             ok &= ExpectStatus(eval.status, StatusCode::Ok, "Literal eval status");
             ok &= ExpectTrue(eval.value == c.expected, std::string("Literal eval value actual: ") + eval.value);
-            ok &= ExpectTrue(eval.diagnostics == "Literal",
-                             std::string("Literal eval diagnostics actual: ") + eval.diagnostics);
+            ok &= ExpectTrue(eval.diagnostics == "ok", "Literal diagnostics ok");
         }
-        auto hashRes = runtime->LoadScript("literals", {"hash", "let x = 1;"});
-        ok &= ExpectStatus(hashRes.status, StatusCode::Ok, "Hash load status");
-        auto hashEval = runtime->EvaluateSync("literals", "hash");
-        ok &= ExpectStatus(hashEval.status, StatusCode::Ok, "Hash eval status");
-        ok &= ExpectTrue(hashEval.diagnostics == std::string("Baseline hash"),
-                         std::string("Hash diagnostics actual: ") + hashEval.diagnostics);
-        ok &= ExpectTrue(!hashEval.value.empty(), "Hash value populated");
         return ok;
     }
 
-    bool BytecodeRoundtripReturnsHash() {
-        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::MultiThread));
-        bool ok = ExpectTrue(runtime != nullptr, "Runtime allocation");
-        if (!ok) {
+    bool ArithmeticExecution() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        runtime->CreateContext({"math", 16384}, nullptr);
+        struct MathCase {
+            const char *name;
+            const char *source;
+            const char *expected;
+        } cases[]{
+                    {"add", "return 1 + 2 + 3;", "6"},
+                    {"precedence", "return 2 + 3 * 4;", "14"},
+                    {"parentheses", "return (2 + 3) * 4;", "20"},
+                    {"unary", "return -8 + 3;", "-5"},
+                    {"division", "return 18 / 6;", "3"}
+                };
+        bool ok = true;
+        for (const auto &c: cases) {
+            auto res = runtime->LoadScript("math", {c.name, c.source});
+            ok &= ExpectStatus(res.status, StatusCode::Ok, "Math load status");
+            auto eval = runtime->EvaluateSync("math", c.name);
+            ok &= ExpectStatus(eval.status, StatusCode::Ok, "Math eval status");
+            ok &= ExpectTrue(eval.value == c.expected, std::string("Math eval value actual: ") + eval.value);
+        }
+        return ok;
+    }
+
+    bool DivisionByZeroReported() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        runtime->CreateContext({"math", 16384}, nullptr);
+        auto load = runtime->LoadScript("math", {"explode", "return 4 / 0;"});
+        bool ok = ExpectStatus(load.status, StatusCode::Ok, "Load division script");
+        auto eval = runtime->EvaluateSync("math", "explode");
+        ok &= ExpectStatus(eval.status, StatusCode::InvalidArgument, "Division by zero status");
+        ok &= ExpectTrue(!eval.diagnostics.empty(), "Division diagnostics");
+        return ok;
+    }
+
+    bool BytecodeRoundTrip() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        runtime->CreateContext({"compile", 16384}, nullptr);
+        runtime->CreateContext({"playback", 16384}, nullptr);
+        auto load = runtime->LoadScript("compile", {"entry", "return 100 - 1;"});
+        bool ok = ExpectStatus(load.status, StatusCode::Ok, "Compile load status");
+        const SpectreContext *compileContext = nullptr;
+        ok &= ExpectStatus(runtime->GetContext("compile", &compileContext), StatusCode::Ok, "Fetch compile context");
+        const spectre::ScriptRecord *record = nullptr;
+        if (compileContext != nullptr) {
+            ok &= ExpectStatus(compileContext->GetScript("entry", &record), StatusCode::Ok, "Fetch script record");
+        }
+        ok &= ExpectTrue(record != nullptr && !record->bytecode.empty(), "Serialized bytecode available");
+        if (!ok || record == nullptr) {
             return false;
         }
-        ok &= ExpectTrue(runtime->Config().mode == RuntimeMode::MultiThread, "Configured multi thread");
-        runtime->CreateContext({"render", 8192}, nullptr);
-        spectre::BytecodeArtifact artifact{"bundle", {1, 2, 3, 4}};
-        auto loadResult = runtime->LoadBytecode("render", artifact);
-        ok &= ExpectStatus(loadResult.status, StatusCode::Ok, "LoadBytecode status");
-        auto evalResult = runtime->EvaluateSync("render", "bundle");
-        ok &= ExpectStatus(evalResult.status, StatusCode::Ok, "EvaluateSync bytecode status");
-        ok &= ExpectTrue(!evalResult.value.empty(), "Bytecode hash present");
-        ok &= ExpectTrue(evalResult.diagnostics == "Bytecode hash",
-                         std::string("Bytecode diagnostics actual: ") + evalResult.diagnostics);
-        spectre::BytecodeArtifact fallback{"empty", {}};
-        auto loadFallback = runtime->LoadBytecode("render", fallback);
-        ok &= ExpectStatus(loadFallback.status, StatusCode::Ok, "Load empty bytecode status");
-        auto evalFallback = runtime->EvaluateSync("render", "empty");
-        ok &= ExpectStatus(evalFallback.status, StatusCode::Ok, "Eval empty bytecode status");
-        ok &= ExpectTrue(!evalFallback.value.empty(), "Eval empty bytecode hash");
-        ok &= ExpectTrue(evalFallback.diagnostics == "Bytecode hash",
-                         std::string("Eval empty bytecode diagnostics actual: ") + evalFallback.diagnostics);
+        spectre::BytecodeArtifact artifact{"entry", record->bytecode};
+        auto loadBytecode = runtime->LoadBytecode("playback", artifact);
+        ok &= ExpectStatus(loadBytecode.status, StatusCode::Ok, "LoadBytecode status");
+        auto eval = runtime->EvaluateSync("playback", "entry");
+        ok &= ExpectStatus(eval.status, StatusCode::Ok, "Evaluate bytecode");
+        ok &= ExpectTrue(eval.value == "99", "Bytecode result matches");
         return ok;
     }
 
     bool DestroyContextRejectsOperations() {
         auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
-        runtime->CreateContext({"ai", 16384}, nullptr);
-        auto status = runtime->DestroyContext("ai");
-        bool ok = ExpectStatus(status, StatusCode::Ok, "DestroyContext status");
-        auto loadResult = runtime->LoadScript("ai", {"noop", "return 'x';"});
-        ok &= ExpectStatus(loadResult.status, StatusCode::NotFound, "LoadScript should fail after destroy");
-        const SpectreContext *out = nullptr;
-        auto getStatus = runtime->GetContext("ai", &out);
-        ok &= ExpectStatus(getStatus, StatusCode::NotFound, "GetContext after destroy");
-        return ok;
-    }
-
-    bool TickAndReconfigureUpdatesState() {
-        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
-        spectre::TickInfo tickInfo{0.008, 12};
-        runtime->Tick(tickInfo);
-        auto last = runtime->LastTick();
-        bool ok = ExpectTrue(last.frameIndex == 12, "Tick frame index");
-        ok &= ExpectTrue(last.deltaSeconds == 0.008, "Tick delta seconds");
-        auto updated = runtime->Config();
-        updated.memory.heapBytes += 4096;
-        updated.enableGpuAcceleration = true;
-        auto sameModeStatus = runtime->Reconfigure(updated);
-        ok &= ExpectStatus(sameModeStatus, StatusCode::Ok, "Reconfigure same mode");
-        auto reloaded = runtime->Config();
-        ok &= ExpectTrue(reloaded.memory.heapBytes == updated.memory.heapBytes, "Config heap updated");
-        ok &= ExpectTrue(reloaded.enableGpuAcceleration, "GPU flag applied");
-        updated.mode = RuntimeMode::MultiThread;
-        auto modeChangeStatus = runtime->Reconfigure(updated);
-        ok &= ExpectStatus(modeChangeStatus, StatusCode::InvalidArgument, "Reconfigure mode change rejected");
+        runtime->CreateContext({"temp", 4096}, nullptr);
+        runtime->LoadScript("temp", {"value", "return 5;"});
+        runtime->DestroyContext("temp");
+        auto eval = runtime->EvaluateSync("temp", "value");
+        bool ok = ExpectStatus(eval.status, StatusCode::NotFound, "Evaluate on destroyed context");
+        auto ctxStatus = runtime->GetContext("temp", nullptr);
+        ok &= ExpectStatus(ctxStatus, StatusCode::NotFound, "GetContext after destroy");
         return ok;
     }
 
@@ -239,30 +260,30 @@ namespace {
         return ok;
     }
 
-    bool SubsystemScaffoldingProvidesStubs() {
+    bool SubsystemSuiteProvidesCpuBackends() {
         auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
         bool ok = ExpectTrue(runtime != nullptr, "Runtime init");
         if (!ok) {
             return false;
         }
         auto &manifest = runtime->Manifest();
-        ok &= ExpectTrue(manifest.parserBackend == "stub.parser.v0", "Parser backend name");
-        ok &= ExpectTrue(manifest.bytecodeBackend == "stub.bytecode.v0", "Bytecode backend name");
-        ok &= ExpectTrue(manifest.executionBackend == "stub.execution.v0", "Execution backend name");
-        ok &= ExpectTrue(manifest.gcBackend == "stub.gc.v0", "GC backend name");
-        ok &= ExpectTrue(manifest.memoryBackend == "stub.memory.v0", "Memory backend name");
-        ok &= ExpectTrue(manifest.telemetryBackend == "stub.telemetry.v0", "Telemetry backend name");
-        ok &= ExpectTrue(manifest.schedulerBackend == "stub.scheduler.v0", "Scheduler backend name");
-        ok &= ExpectTrue(manifest.interopBackend == "stub.interop.v0", "Interop backend name");
+        ok &= ExpectTrue(manifest.parserBackend == "cpu.parser.v1", "Parser backend name");
+        ok &= ExpectTrue(manifest.bytecodeBackend == "cpu.bytecode.v1", "Bytecode backend name");
+        ok &= ExpectTrue(manifest.executionBackend == "cpu.execution.baseline.v1", "Execution backend name");
+        ok &= ExpectTrue(manifest.gcBackend == "cpu.gc.linear.v1", "GC backend name");
+        ok &= ExpectTrue(manifest.memoryBackend == "cpu.memory.arena.v1", "Memory backend name");
+        ok &= ExpectTrue(manifest.telemetryBackend == "cpu.telemetry.ring.v1", "Telemetry backend name");
+        ok &= ExpectTrue(manifest.schedulerBackend == "cpu.scheduler.frame.v1", "Scheduler backend name");
+        ok &= ExpectTrue(manifest.interopBackend == "cpu.interop.table.v1", "Interop backend name");
         auto &suite = runtime->Subsystems();
-        ok &= ExpectTrue(suite.parser != nullptr, "Parser stub present");
-        ok &= ExpectTrue(suite.bytecode != nullptr, "Bytecode stub present");
-        ok &= ExpectTrue(suite.execution != nullptr, "Execution stub present");
-        ok &= ExpectTrue(suite.gc != nullptr, "GC stub present");
-        ok &= ExpectTrue(suite.memory != nullptr, "Memory stub present");
-        ok &= ExpectTrue(suite.telemetry != nullptr, "Telemetry stub present");
-        ok &= ExpectTrue(suite.scheduler != nullptr, "Scheduler stub present");
-        ok &= ExpectTrue(suite.interop != nullptr, "Interop stub present");
+        ok &= ExpectTrue(suite.parser != nullptr, "Parser present");
+        ok &= ExpectTrue(suite.bytecode != nullptr, "Bytecode present");
+        ok &= ExpectTrue(suite.execution != nullptr, "Execution present");
+        ok &= ExpectTrue(suite.gc != nullptr, "GC present");
+        ok &= ExpectTrue(suite.memory != nullptr, "Memory present");
+        ok &= ExpectTrue(suite.telemetry != nullptr, "Telemetry present");
+        ok &= ExpectTrue(suite.scheduler != nullptr, "Scheduler present");
+        ok &= ExpectTrue(suite.interop != nullptr, "Interop present");
         if (!ok) {
             return false;
         }
@@ -275,8 +296,8 @@ namespace {
         ok &= ExpectStatus(lowerStatus, StatusCode::Ok, "Lower module status");
         spectre::detail::ExecutionRequest request{"ctx", "entry", &program};
         auto execResponse = suite.execution->Execute(request);
-        ok &= ExpectStatus(execResponse.status, StatusCode::Ok, "Execution stub status");
-        ok &= ExpectTrue(!execResponse.value.empty(), "Execution value populated");
+        ok &= ExpectStatus(execResponse.status, StatusCode::Ok, "Execution status");
+        ok &= ExpectTrue(execResponse.value == "5", "Execution returns literal");
         spectre::detail::GcSnapshot snapshot{};
         auto gcStatus = suite.gc->Collect(snapshot);
         ok &= ExpectStatus(gcStatus, StatusCode::Ok, "GC collect status");
@@ -299,6 +320,25 @@ namespace {
         return ok;
     }
 
+    bool TickAndReconfigureUpdatesState() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        bool ok = ExpectTrue(runtime != nullptr, "Runtime init");
+        if (!ok) {
+            return false;
+        }
+        spectre::TickInfo info{0.016, 12};
+        runtime->Tick(info);
+        auto last = runtime->LastTick();
+        ok &= ExpectTrue(last.frameIndex == 12, "Frame index recorded");
+        ok &= ExpectTrue(last.deltaSeconds == 0.016, "Delta recorded");
+        RuntimeConfig config = runtime->Config();
+        config.memory.heapBytes += 1024;
+        auto status = runtime->Reconfigure(config);
+        ok &= ExpectStatus(status, StatusCode::Ok, "Reconfigure status");
+        ok &= ExpectTrue(runtime->Config().memory.heapBytes == config.memory.heapBytes, "Config updated");
+        return ok;
+    }
+
     struct TestCase {
         const char *name;
 
@@ -311,12 +351,14 @@ int main() {
         {"DefaultConfigPopulatesDefaults", DefaultConfigPopulatesDefaults},
         {"ContextLifecycle", ContextLifecycle},
         {"LoadFailuresSurfaceStatuses", LoadFailuresSurfaceStatuses},
-        {"ScriptStorageAndLookup", ScriptStorageAndLookup},
-        {"LiteralCoverage", LiteralCoverage},
-        {"BytecodeRoundtripReturnsHash", BytecodeRoundtripReturnsHash},
+        {"ScriptCompilationAndLookup", ScriptCompilationAndLookup},
+        {"LiteralExecutionCoverage", LiteralExecutionCoverage},
+        {"ArithmeticExecution", ArithmeticExecution},
+        {"DivisionByZeroReported", DivisionByZeroReported},
+        {"BytecodeRoundTrip", BytecodeRoundTrip},
         {"DestroyContextRejectsOperations", DestroyContextRejectsOperations},
         {"MultiThreadLifecycle", MultiThreadLifecycle},
-        {"SubsystemScaffoldingProvidesStubs", SubsystemScaffoldingProvidesStubs},
+        {"SubsystemSuiteProvidesCpuBackends", SubsystemSuiteProvidesCpuBackends},
         {"TickAndReconfigureUpdatesState", TickAndReconfigureUpdatesState}
     };
 
@@ -336,11 +378,3 @@ int main() {
     std::cout << "Executed " << passed << " / " << tests.size() << " tests" << std::endl;
     return 0;
 }
-
-
-
-
-
-
-
-

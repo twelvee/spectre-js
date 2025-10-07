@@ -9,6 +9,33 @@
 #include "spectre/status.h"
 
 namespace spectre::detail {
+    enum class TokenKind : std::uint8_t {
+        Invalid,
+        End,
+        Return,
+        Semicolon,
+        Number,
+        String,
+        TrueLiteral,
+        FalseLiteral,
+        NullLiteral,
+        UndefinedLiteral,
+        Plus,
+        Minus,
+        Star,
+        Slash,
+        LeftParen,
+        RightParen
+    };
+
+    struct ParsedToken {
+        TokenKind kind;
+        std::uint32_t begin;
+        std::uint32_t end;
+        std::int32_t literalIndex;
+        double numericValue;
+    };
+
     struct ScriptUnit {
         std::string name;
         std::string source;
@@ -18,12 +45,18 @@ namespace spectre::detail {
         std::string name;
         std::string fingerprint;
         std::vector<std::uint8_t> payload;
+        std::vector<ParsedToken> tokens;
+        std::vector<std::string> literals;
+        std::string diagnostics;
     };
 
     struct ExecutableProgram {
         std::string name;
         std::vector<std::uint8_t> code;
         std::uint64_t version;
+        std::vector<double> numberConstants;
+        std::vector<std::string> stringConstants;
+        std::string diagnostics;
     };
 
     struct ExecutionRequest {
@@ -146,5 +179,5 @@ namespace spectre::detail {
         SubsystemManifest manifest;
     };
 
-    SubsystemSuite CreateStubSubsystemSuite(const RuntimeConfig &config);
+    SubsystemSuite CreateCpuSubsystemSuite(const RuntimeConfig &config);
 }

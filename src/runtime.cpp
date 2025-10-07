@@ -23,7 +23,7 @@ namespace spectre {
                 return nullptr;
             }
         }
-        impl->subsystems = detail::CreateStubSubsystemSuite(impl->mode->Config());
+        impl->subsystems = detail::CreateCpuSubsystemSuite(impl->mode->Config());
         return std::unique_ptr<SpectreRuntime>(new SpectreRuntime(std::move(impl)));
     }
 
@@ -100,6 +100,7 @@ namespace spectre {
         return m_Impl->mode->GetContext(name, outContext);
     }
 }
+
 
 
 
