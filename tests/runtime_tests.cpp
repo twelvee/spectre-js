@@ -3,6 +3,7 @@
 #include <string>
 #include <algorithm>
 #include <array>
+#include <utility>
 #include <vector>
 #include <cmath>
 
@@ -29,6 +30,7 @@
 #include "spectre/es2025/modules/bigint_module.h"
 #include "spectre/es2025/modules/date_module.h"
 #include "spectre/es2025/modules/string_module.h"
+#include "spectre/es2025/modules/symbol_module.h"
 
 namespace {
     using spectre::RuntimeConfig;
@@ -1693,6 +1695,76 @@ namespace {
         return ok;
     }
 
+    bool SymbolModuleManagesSymbols() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        bool ok = ExpectTrue(runtime != nullptr, "Runtime created");
+        if (!runtime) {
+            return false;
+        }
+        auto &environment = runtime->EsEnvironment();
+        auto *modulePtr = environment.FindModule("Symbol");
+        auto *symbolModule = dynamic_cast<spectre::es2025::SymbolModule *>(modulePtr);
+        ok &= ExpectTrue(symbolModule != nullptr, "Symbol module available");
+        if (!symbolModule) {
+            return false;
+        }
+        std::array<std::pair<spectre::es2025::SymbolModule::WellKnown, const char *>, 16> wellKnown = {{
+            {spectre::es2025::SymbolModule::WellKnown::AsyncIterator, "Symbol.asyncIterator"},
+            {spectre::es2025::SymbolModule::WellKnown::HasInstance, "Symbol.hasInstance"},
+            {spectre::es2025::SymbolModule::WellKnown::IsConcatSpreadable, "Symbol.isConcatSpreadable"},
+            {spectre::es2025::SymbolModule::WellKnown::Iterator, "Symbol.iterator"},
+            {spectre::es2025::SymbolModule::WellKnown::Match, "Symbol.match"},
+            {spectre::es2025::SymbolModule::WellKnown::MatchAll, "Symbol.matchAll"},
+            {spectre::es2025::SymbolModule::WellKnown::Replace, "Symbol.replace"},
+            {spectre::es2025::SymbolModule::WellKnown::Search, "Symbol.search"},
+            {spectre::es2025::SymbolModule::WellKnown::Species, "Symbol.species"},
+            {spectre::es2025::SymbolModule::WellKnown::Split, "Symbol.split"},
+            {spectre::es2025::SymbolModule::WellKnown::ToPrimitive, "Symbol.toPrimitive"},
+            {spectre::es2025::SymbolModule::WellKnown::ToStringTag, "Symbol.toStringTag"},
+            {spectre::es2025::SymbolModule::WellKnown::Unscopables, "Symbol.unscopables"},
+            {spectre::es2025::SymbolModule::WellKnown::Dispose, "Symbol.dispose"},
+            {spectre::es2025::SymbolModule::WellKnown::AsyncDispose, "Symbol.asyncDispose"},
+            {spectre::es2025::SymbolModule::WellKnown::Metadata, "Symbol.metadata"}
+        }};
+        std::vector<spectre::es2025::SymbolModule::Handle> handles;
+        handles.reserve(wellKnown.size());
+        for (const auto &entry: wellKnown) {
+            auto handle = symbolModule->WellKnownHandle(entry.first);
+            ok &= ExpectTrue(handle != 0, "Well-known handle valid");
+            ok &= ExpectTrue(symbolModule->IsPinned(handle), "Well-known pinned");
+            ok &= ExpectTrue(symbolModule->Description(handle) == entry.second, "Well-known description");
+            handles.push_back(handle);
+        }
+        auto sorted = handles;
+        std::sort(sorted.begin(), sorted.end());
+        ok &= ExpectTrue(std::adjacent_find(sorted.begin(), sorted.end()) == sorted.end(), "Well-known unique");
+        spectre::es2025::SymbolModule::Handle localHandle = 0;
+        ok &= ExpectStatus(symbolModule->Create("spectre.local", localHandle), StatusCode::Ok, "Create local symbol");
+        ok &= ExpectTrue(localHandle != 0, "Local handle valid");
+        ok &= ExpectTrue(!symbolModule->IsGlobal(localHandle), "Local symbol global flag");
+        ok &= ExpectTrue(!symbolModule->IsPinned(localHandle), "Local symbol pinned flag");
+        ok &= ExpectTrue(symbolModule->Description(localHandle) == "spectre.local", "Local description match");
+        spectre::es2025::SymbolModule::Handle uniqueHandle = 0;
+        ok &= ExpectStatus(symbolModule->CreateUnique(uniqueHandle), StatusCode::Ok, "Create unique symbol");
+        ok &= ExpectTrue(uniqueHandle != 0, "Unique handle valid");
+        ok &= ExpectTrue(symbolModule->Description(uniqueHandle).empty(), "Unique description empty");
+        spectre::es2025::SymbolModule::Handle globalHandle = 0;
+        ok &= ExpectStatus(symbolModule->CreateGlobal("spectre.global", globalHandle), StatusCode::Ok, "Create global symbol");
+        ok &= ExpectTrue(symbolModule->IsGlobal(globalHandle), "Global symbol flag");
+        std::string registryKey;
+        ok &= ExpectStatus(symbolModule->KeyFor(globalHandle, registryKey), StatusCode::Ok, "Registry lookup");
+        ok &= ExpectTrue(registryKey == "spectre.global", "Registry key value");
+        spectre::es2025::SymbolModule::Handle repeatHandle = 0;
+        ok &= ExpectStatus(symbolModule->CreateGlobal("spectre.global", repeatHandle), StatusCode::Ok, "Repeat global symbol");
+        ok &= ExpectTrue(repeatHandle == globalHandle, "Global reuse");
+        const auto &metrics = symbolModule->GetMetrics();
+        ok &= ExpectTrue(metrics.globalSymbols >= 1, "Metrics global symbols");
+        ok &= ExpectTrue(metrics.localSymbols >= static_cast<std::uint64_t>(handles.size() + 2), "Metrics local symbols");
+        ok &= ExpectTrue(metrics.registryHits >= 1, "Metrics registry hits");
+        ok &= ExpectTrue(metrics.registryMisses >= 1, "Metrics registry misses");
+        ok &= ExpectTrue(metrics.wellKnownSymbols == static_cast<std::uint64_t>(wellKnown.size()), "Metrics well-known symbols");
+        return ok;
+    }
     struct TestCase {
         const char *name;
 
@@ -1737,6 +1809,7 @@ int main() {
         {"BigIntModulePerformsArithmetic", BigIntModulePerformsArithmetic},
         {"ObjectModuleHandlesPrototypes", ObjectModuleHandlesPrototypes},
         {"ProxyModuleCoordinatesTraps", ProxyModuleCoordinatesTraps},
+        {"SymbolModuleManagesSymbols", SymbolModuleManagesSymbols},
         {"MapModuleMaintainsOrder", MapModuleMaintainsOrder},
         {"WeakMapModulePurgesInvalidKeys", WeakMapModulePurgesInvalidKeys},
         {"MathModuleAcceleratesWorkloads", MathModuleAcceleratesWorkloads},

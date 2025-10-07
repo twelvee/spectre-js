@@ -23,6 +23,7 @@
 #include "spectre/es2025/modules/iterator_module.h"
 #include "spectre/es2025/modules/generator_module.h"
 #include "spectre/es2025/modules/string_module.h"
+#include "spectre/es2025/modules/symbol_module.h"
 #include "spectre/es2025/modules/math_module.h"
 #include "spectre/es2025/modules/number_module.h"
 #include "spectre/es2025/modules/bigint_module.h"
@@ -300,6 +301,54 @@ void DemonstrateStringModule(spectre::es2025::StringModule &stringModule) {
     stringModule.Release(title);
 }
 
+void ShowcaseSymbols(spectre::es2025::SymbolModule &symbolModule) {
+    std::cout << "\nSymbol registry demo" << std::endl;
+    auto iteratorHandle = symbolModule.WellKnownHandle(spectre::es2025::SymbolModule::WellKnown::Iterator);
+    auto toStringTagHandle = symbolModule.WellKnownHandle(spectre::es2025::SymbolModule::WellKnown::ToStringTag);
+    std::cout << "  iterator => " << symbolModule.Description(iteratorHandle) << std::endl;
+    std::cout << "  toStringTag => " << symbolModule.Description(toStringTagHandle) << std::endl;
+
+    spectre::es2025::SymbolModule::Handle localHandle = 0;
+    if (symbolModule.Create("demo.local", localHandle) == spectre::StatusCode::Ok) {
+        auto localDesc = symbolModule.Description(localHandle);
+        std::cout << "  local => " << localDesc << " global=" << (symbolModule.IsGlobal(localHandle) ? "true" : "false") << std::endl;
+    } else {
+        std::cout << "  local symbol creation failed" << std::endl;
+    }
+
+    spectre::es2025::SymbolModule::Handle uniqueHandle = 0;
+    if (symbolModule.CreateUnique(uniqueHandle) == spectre::StatusCode::Ok) {
+        auto uniqueDesc = symbolModule.Description(uniqueHandle);
+        std::cout << "  unique => handle=" << uniqueHandle << " description=";
+        if (uniqueDesc.empty()) {
+            std::cout << "<empty>";
+        } else {
+            std::cout << uniqueDesc;
+        }
+        std::cout << std::endl;
+    }
+
+    std::string registryKey;
+    spectre::es2025::SymbolModule::Handle globalHandle = 0;
+    if (symbolModule.CreateGlobal("demo.registry.key", globalHandle) == spectre::StatusCode::Ok) {
+        if (symbolModule.KeyFor(globalHandle, registryKey) == spectre::StatusCode::Ok) {
+            std::cout << "  global => " << registryKey << " handle=" << globalHandle << std::endl;
+        }
+        spectre::es2025::SymbolModule::Handle reuseHandle = 0;
+        if (symbolModule.CreateGlobal("demo.registry.key", reuseHandle) == spectre::StatusCode::Ok) {
+            std::cout << "  global reuse stable=" << (reuseHandle == globalHandle ? "true" : "false") << std::endl;
+        }
+    } else {
+        std::cout << "  global symbol creation failed" << std::endl;
+    }
+
+    const auto &metrics = symbolModule.GetMetrics();
+    std::cout << "  metrics => live=" << metrics.liveSymbols
+            << " local=" << metrics.localSymbols
+            << " global=" << metrics.globalSymbols
+            << " hits=" << metrics.registryHits
+            << " misses=" << metrics.registryMisses << std::endl;
+}
 void DemonstrateMathModule(spectre::es2025::MathModule &mathModule) {
     std::cout << "\nDemonstrating math module" << std::endl;
     auto originalFlags = std::cout.flags();
@@ -937,6 +986,13 @@ int main() {
         return 1;
     }
 
+    auto *symbolModulePtr = environment.FindModule("Symbol");
+    auto *symbolModule = dynamic_cast<es2025::SymbolModule *>(symbolModulePtr);
+    if (!symbolModule) {
+        std::cerr << "Symbol module unavailable" << std::endl;
+        return 1;
+    }
+
     auto *mathModulePtr = environment.FindModule("Math");
     auto *mathModule = dynamic_cast<es2025::MathModule *>(mathModulePtr);
     if (!mathModule) {
@@ -962,6 +1018,7 @@ int main() {
 
     EvaluateSampleScripts(*globalModule);
 
+    ShowcaseSymbols(*symbolModule);
     DemonstrateIteratorModule(*iteratorModule);
     DemonstrateGeneratorModule(*generatorModule, *iteratorModule);
     DemonstrateArrayModule(*arrayModule);
@@ -1016,4 +1073,5 @@ int main() {
     std::cout << "\nES2025 production scaffold ready" << std::endl;
     return 0;
 }
+
 
