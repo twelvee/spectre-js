@@ -2,23 +2,26 @@
 
 #include <cstdint>
 #include <string>
-#include <string_view>
 #include <vector>
 
-namespace spectre::detail {
-    std::vector<std::uint8_t> BuildBaseline(const std::string &source);
+#include "spectre/runtime.h"
+#include "spectre/subsystems.h"
+#include "spectre/status.h"
 
+namespace spectre::detail {
     std::string HashBytes(const std::vector<std::uint8_t> &bytes);
 
     std::uint64_t HashString(const std::string &value);
 
-    void TrimLeft(const std::string &source, std::size_t &pos);
+    StatusCode CompileScript(ParserFrontend &parser,
+                             BytecodePipeline &bytecode,
+                             const ScriptSource &source,
+                             ExecutableProgram &outProgram,
+                             std::string &diagnostics);
 
-    bool MatchKeyword(const std::string &source, std::size_t pos, std::string_view keyword);
+    std::vector<std::uint8_t> SerializeProgram(const ExecutableProgram &program);
 
-    bool TryParseStringLiteral(const std::string &source, std::size_t &pos, std::string &value);
-
-    bool TryParseNumberLiteral(const std::string &source, std::size_t &pos, std::string &value);
-
-    bool TryInterpretLiteral(const std::string &source, std::string &value);
+    StatusCode DeserializeProgram(const std::vector<std::uint8_t> &data,
+                                  ExecutableProgram &outProgram,
+                                  std::string &diagnostics);
 }

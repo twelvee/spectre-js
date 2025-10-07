@@ -1,154 +1,177 @@
 ﻿#include "mode_helpers.h"
 
-#include <cctype>
+#include <array>
+#include <cstring>
+#include <limits>
 
 namespace spectre::detail {
-    std::vector<std::uint8_t> BuildBaseline(const std::string &source) {
-        std::vector<std::uint8_t> data;
-        data.reserve(source.size() + 8);
-        std::uint64_t hash = 1469598103934665603ULL;
-        for (unsigned char ch: source) {
-            hash ^= ch;
-            hash *= 1099511628211ULL;
-            data.push_back(static_cast<std::uint8_t>(hash & 0xFFULL));
-        }
-        for (int i = 0; i < 8; ++i) {
-            hash ^= static_cast<std::uint64_t>(i + 1);
-            hash *= 1099511628211ULL;
-            data.push_back(static_cast<std::uint8_t>((hash >> ((i & 7) * 8)) & 0xFFULL));
-        }
-        return data;
+    namespace {
+        constexpr std::uint64_t kFnvOffset = 1469598103934665603ULL;
+        constexpr std::uint64_t kFnvPrime = 1099511628211ULL;
+
+        struct ProgramHeader {
+            char magic[4];
+            std::uint32_t formatVersion;
+            std::uint64_t programVersion;
+            std::uint32_t codeSize;
+            std::uint32_t numberCount;
+            std::uint32_t stringCount;
+        };
+
+        constexpr std::uint32_t kProgramFormatVersion = 1;
     }
 
     std::string HashBytes(const std::vector<std::uint8_t> &bytes) {
-        std::uint64_t hash = 1469598103934665603ULL;
+        std::uint64_t hash = kFnvOffset;
         for (auto b: bytes) {
             hash ^= static_cast<std::uint64_t>(b);
-            hash *= 1099511628211ULL;
+            hash *= kFnvPrime;
         }
-        char buffer[17];
+        std::array < char, 17 > buffer{};
         for (int i = 0; i < 16; ++i) {
-            auto shift = static_cast<unsigned>(60 - i * 4);
+            auto shift = static_cast<unsigned>((15 - i) * 4);
             auto digit = static_cast<unsigned>((hash >> shift) & 0xFULL);
             buffer[i] = static_cast<char>(digit < 10 ? '0' + digit : 'a' + digit - 10);
         }
         buffer[16] = '\0';
-        return std::string(buffer);
+        return std::string(buffer.data());
     }
 
     std::uint64_t HashString(const std::string &value) {
-        std::uint64_t hash = 1469598103934665603ULL;
+        std::uint64_t hash = kFnvOffset;
         for (unsigned char ch: value) {
             hash ^= ch;
-            hash *= 1099511628211ULL;
+            hash *= kFnvPrime;
         }
         return hash;
     }
 
-    void TrimLeft(const std::string &source, std::size_t &pos) {
-        while (pos < source.size() && std::isspace(static_cast<unsigned char>(source[pos])) != 0) {
-            ++pos;
+    StatusCode CompileScript(ParserFrontend &parser,
+                             BytecodePipeline &bytecode,
+                             const ScriptSource &source,
+                             ExecutableProgram &outProgram,
+                             std::string &diagnostics) {
+        ScriptUnit unit{source.name, source.source};
+        ModuleArtifact artifact{};
+        auto parseStatus = parser.ParseModule(unit, artifact);
+        if (parseStatus != StatusCode::Ok) {
+            diagnostics = artifact.diagnostics;
+            return parseStatus;
         }
+        auto lowerStatus = bytecode.LowerModule(artifact, outProgram);
+        if (lowerStatus != StatusCode::Ok) {
+            diagnostics = outProgram.diagnostics;
+            return lowerStatus;
+        }
+        diagnostics.clear();
+        return StatusCode::Ok;
     }
 
-    bool MatchKeyword(const std::string &source, std::size_t pos, std::string_view keyword) {
-        if (pos + keyword.size() > source.size()) {
-            return false;
+    std::vector<std::uint8_t> SerializeProgram(const ExecutableProgram &program) {
+        ProgramHeader header{};
+        header.magic[0] = 'S';
+        header.magic[1] = 'J';
+        header.magic[2] = 'S';
+        header.magic[3] = 'B';
+        header.formatVersion = kProgramFormatVersion;
+        header.programVersion = program.version;
+        header.codeSize = static_cast<std::uint32_t>(program.code.size());
+        header.numberCount = static_cast<std::uint32_t>(program.numberConstants.size());
+        header.stringCount = static_cast<std::uint32_t>(program.stringConstants.size());
+
+        std::vector<std::uint8_t> data;
+        data.reserve(sizeof(header) + header.codeSize + header.numberCount * sizeof(double));
+        const auto *headerBytes = reinterpret_cast<const std::uint8_t *>(&header);
+        data.insert(data.end(), headerBytes, headerBytes + sizeof(header));
+        data.insert(data.end(), program.code.begin(), program.code.end());
+
+        for (double value: program.numberConstants) {
+            std::uint64_t bits{};
+            static_assert(sizeof(bits) == sizeof(value));
+            std::memcpy(&bits, &value, sizeof(value));
+            for (int i = 0; i < 8; ++i) {
+                data.push_back(static_cast<std::uint8_t>((bits >> (i * 8)) & 0xFFULL));
+            }
         }
-        return source.compare(pos, keyword.size(), keyword) == 0;
+
+        for (const auto &str: program.stringConstants) {
+            auto length = static_cast<std::uint32_t>(str.size());
+            for (int i = 0; i < 4; ++i) {
+                data.push_back(static_cast<std::uint8_t>((length >> (i * 8)) & 0xFFU));
+            }
+            data.insert(data.end(), str.begin(), str.end());
+        }
+
+        return data;
     }
 
-    bool TryParseStringLiteral(const std::string &source, std::size_t &pos, std::string &value) {
-        if (pos >= source.size()) {
-            return false;
+    StatusCode DeserializeProgram(const std::vector<std::uint8_t> &data,
+                                  ExecutableProgram &outProgram,
+                                  std::string &diagnostics) {
+        if (data.size() < sizeof(ProgramHeader)) {
+            diagnostics = "Bytecode payload too small";
+            return StatusCode::InvalidArgument;
         }
-        char quote = source[pos];
-        if (quote != '\'' && quote != '"') {
-            return false;
+        ProgramHeader header{};
+        std::memcpy(&header, data.data(), sizeof(header));
+        if (!(header.magic[0] == 'S' && header.magic[1] == 'J' && header.magic[2] == 'S' && header.magic[3] == 'B')) {
+            diagnostics = "Invalid bytecode signature";
+            return StatusCode::InvalidArgument;
         }
-        ++pos;
-        std::string result;
-        while (pos < source.size()) {
-            char ch = source[pos];
-            if (ch == quote) {
-                ++pos;
-                value = std::move(result);
-                return true;
-            }
-            if (ch == '\\') {
-                if (pos + 1 >= source.size()) {
-                    return false;
-                }
-                result.push_back(source[pos + 1]);
-                pos += 2;
-            } else {
-                result.push_back(ch);
-                ++pos;
-            }
+        if (header.formatVersion != kProgramFormatVersion) {
+            diagnostics = "Unsupported bytecode format";
+            return StatusCode::InvalidArgument;
         }
-        return false;
-    }
 
-    bool TryParseNumberLiteral(const std::string &source, std::size_t &pos, std::string &value) {
-        std::size_t start = pos;
-        if (pos < source.size() && (source[pos] == '+' || source[pos] == '-')) {
-            ++pos;
+        std::size_t offset = sizeof(header);
+        if (offset + header.codeSize > data.size()) {
+            diagnostics = "Corrupted bytecode payload";
+            return StatusCode::InvalidArgument;
         }
-        while (pos < source.size() && std::isdigit(static_cast<unsigned char>(source[pos])) != 0) {
-            ++pos;
-        }
-        if (pos < source.size() && source[pos] == '.') {
-            ++pos;
-            while (pos < source.size() && std::isdigit(static_cast<unsigned char>(source[pos])) != 0) {
-                ++pos;
-            }
-        }
-        if (pos < source.size() && (source[pos] == 'e' || source[pos] == 'E')) {
-            ++pos;
-            if (pos < source.size() && (source[pos] == '+' || source[pos] == '-')) {
-                ++pos;
-            }
-            while (pos < source.size() && std::isdigit(static_cast<unsigned char>(source[pos])) != 0) {
-                ++pos;
-            }
-        }
-        if (pos == start) {
-            return false;
-        }
-        std::string_view token(source.data() + start, pos - start);
-        value.assign(token.begin(), token.end());
-        return true;
-    }
+        outProgram.code.assign(data.begin() + static_cast<std::ptrdiff_t>(offset),
+                               data.begin() + static_cast<std::ptrdiff_t>(offset + header.codeSize));
+        offset += header.codeSize;
 
-    bool TryInterpretLiteral(const std::string &source, std::string &value) {
-        auto pos = source.rfind("return");
-        if (pos == std::string::npos) {
-            return false;
+        outProgram.numberConstants.clear();
+        outProgram.numberConstants.reserve(header.numberCount);
+        for (std::uint32_t i = 0; i < header.numberCount; ++i) {
+            if (offset + sizeof(std::uint64_t) > data.size()) {
+                diagnostics = "Corrupted numeric section";
+                return StatusCode::InvalidArgument;
+            }
+            std::uint64_t bits = 0;
+            for (int b = 0; b < 8; ++b) {
+                bits |= static_cast<std::uint64_t>(data[offset + b]) << (b * 8);
+            }
+            double value;
+            std::memcpy(&value, &bits, sizeof(value));
+            outProgram.numberConstants.push_back(value);
+            offset += 8;
         }
-        pos += 6;
-        TrimLeft(source, pos);
-        if (TryParseStringLiteral(source, pos, value)) {
-            return true;
+
+        outProgram.stringConstants.clear();
+        outProgram.stringConstants.reserve(header.stringCount);
+        for (std::uint32_t i = 0; i < header.stringCount; ++i) {
+            if (offset + 4 > data.size()) {
+                diagnostics = "Corrupted string section";
+                return StatusCode::InvalidArgument;
+            }
+            std::uint32_t length = 0;
+            for (int b = 0; b < 4; ++b) {
+                length |= static_cast<std::uint32_t>(data[offset + b]) << (b * 8);
+            }
+            offset += 4;
+            if (offset + length > data.size()) {
+                diagnostics = "Corrupted string payload";
+                return StatusCode::InvalidArgument;
+            }
+            outProgram.stringConstants.emplace_back(reinterpret_cast<const char *>(data.data() + offset), length);
+            offset += length;
         }
-        if (TryParseNumberLiteral(source, pos, value)) {
-            return true;
-        }
-        if (MatchKeyword(source, pos, "true")) {
-            value = "true";
-            return true;
-        }
-        if (MatchKeyword(source, pos, "false")) {
-            value = "false";
-            return true;
-        }
-        if (MatchKeyword(source, pos, "null")) {
-            value = "null";
-            return true;
-        }
-        if (MatchKeyword(source, pos, "undefined")) {
-            value = "undefined";
-            return true;
-        }
-        return false;
+
+        outProgram.version = header.programVersion;
+        outProgram.diagnostics.clear();
+        diagnostics.clear();
+        return StatusCode::Ok;
     }
 }

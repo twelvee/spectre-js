@@ -22,11 +22,14 @@ target_compile_definitions(spectre PRIVATE $<$<CONFIG:Debug>:SPECTRE_DEBUG_BUILD
 
 add_executable(spectre_example_basic examples/basic_demo.cpp)
 add_executable(spectre_example_multi examples/multi_thread_demo.cpp)
+add_executable(spectre_example_showcase examples/es_showcase.cpp)
 target_link_libraries(spectre_example_basic PRIVATE spectre)
 target_link_libraries(spectre_example_multi PRIVATE spectre)
+target_link_libraries(spectre_example_showcase PRIVATE spectre)
 
 set_target_properties(spectre_example_basic PROPERTIES OUTPUT_NAME "spectre_example_basic")
 set_target_properties(spectre_example_multi PROPERTIES OUTPUT_NAME "spectre_example_multi")
+set_target_properties(spectre_example_showcase PROPERTIES OUTPUT_NAME "spectre_example_showcase")
 
 option(SPECTRE_BUILD_TESTS "Build spectre tests" ON)
 
