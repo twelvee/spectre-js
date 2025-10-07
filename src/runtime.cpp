@@ -1,6 +1,7 @@
-﻿#include "spectre/runtime.h"
+#include "spectre/runtime.h"
 
 #include "mode_adapter.h"
+#include "spectre/es2025/environment.h"
 
 #include <memory>
 #include <utility>
@@ -9,6 +10,7 @@ namespace spectre {
     struct SpectreRuntime::Impl {
         std::unique_ptr<detail::ModeAdapter> mode;
         detail::SubsystemSuite subsystems;
+        std::unique_ptr<es2025::Environment> environment;
         TickInfo lastTick{0.0, 0};
     };
 
@@ -24,7 +26,10 @@ namespace spectre {
             }
         }
         impl->subsystems = detail::CreateCpuSubsystemSuite(impl->mode->Config());
-        return std::unique_ptr<SpectreRuntime>(new SpectreRuntime(std::move(impl)));
+        impl->environment = std::make_unique<es2025::Environment>();
+        auto runtime = std::unique_ptr<SpectreRuntime>(new SpectreRuntime(std::move(impl)));
+        runtime->InitializeEnvironment(runtime->Config());
+        return runtime;
     }
 
     SpectreRuntime::SpectreRuntime(std::unique_ptr<Impl> impl) : m_Impl(std::move(impl)) {
@@ -55,6 +60,9 @@ namespace spectre {
     void SpectreRuntime::Tick(const TickInfo &info) {
         m_Impl->lastTick = info;
         m_Impl->mode->Tick(info);
+        if (m_Impl->environment) {
+            m_Impl->environment->Tick(info);
+        }
     }
 
     StatusCode SpectreRuntime::Reconfigure(const RuntimeConfig &config) {
@@ -72,6 +80,9 @@ namespace spectre {
             if (memoryStatus != StatusCode::Ok) {
                 return memoryStatus;
             }
+        }
+        if (m_Impl->environment) {
+            m_Impl->environment->Reconfigure(config);
         }
         return StatusCode::Ok;
     }
@@ -99,16 +110,22 @@ namespace spectre {
     StatusCode SpectreRuntime::GetContext(const std::string &name, const SpectreContext **outContext) const {
         return m_Impl->mode->GetContext(name, outContext);
     }
+
+    es2025::Environment &SpectreRuntime::EsEnvironment() {
+        return *m_Impl->environment;
+    }
+
+    const es2025::Environment &SpectreRuntime::EsEnvironment() const {
+        return *m_Impl->environment;
+    }
+
+    void SpectreRuntime::InitializeEnvironment(const RuntimeConfig &config) {
+        if (!m_Impl->environment) {
+            return;
+        }
+        es2025::ModuleInitContext initContext{*this, m_Impl->subsystems, config};
+        m_Impl->environment->Initialize(initContext);
+    }
 }
-
-
-
-
-
-
-
-
-
-
 
 

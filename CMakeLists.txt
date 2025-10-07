@@ -1,4 +1,4 @@
-﻿cmake_minimum_required(VERSION 3.23)
+cmake_minimum_required(VERSION 3.23)
 project(spectre_js VERSION 0.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -14,6 +14,44 @@ add_library(spectre STATIC
     src/mode_multi_thread.cpp
     src/mode_helpers.cpp
     src/subsystems.cpp
+    es2025/environment.cpp
+    es2025/modules/array_buffer_module.cpp
+    es2025/modules/array_module.cpp
+    es2025/modules/async_function_module.cpp
+    es2025/modules/async_iterator_module.cpp
+    es2025/modules/atomics_module.cpp
+    es2025/modules/bigint_module.cpp
+    es2025/modules/boolean_module.cpp
+    es2025/modules/data_view_module.cpp
+    es2025/modules/date_module.cpp
+    es2025/modules/error_module.cpp
+    es2025/modules/finalization_registry_module.cpp
+    es2025/modules/function_module.cpp
+    es2025/modules/generator_module.cpp
+    es2025/modules/global_module.cpp
+    es2025/modules/intl_module.cpp
+    es2025/modules/iterator_module.cpp
+    es2025/modules/json_module.cpp
+    es2025/modules/map_module.cpp
+    es2025/modules/math_module.cpp
+    es2025/modules/module_loader_module.cpp
+    es2025/modules/number_module.cpp
+    es2025/modules/object_module.cpp
+    es2025/modules/promise_module.cpp
+    es2025/modules/proxy_module.cpp
+    es2025/modules/reflect_module.cpp
+    es2025/modules/regexp_module.cpp
+    es2025/modules/set_module.cpp
+    es2025/modules/shadow_realm_module.cpp
+    es2025/modules/shared_array_buffer_module.cpp
+    es2025/modules/string_module.cpp
+    es2025/modules/structured_clone_module.cpp
+    es2025/modules/symbol_module.cpp
+    es2025/modules/temporal_module.cpp
+    es2025/modules/typed_array_module.cpp
+    es2025/modules/weak_map_module.cpp
+    es2025/modules/weak_ref_module.cpp
+    es2025/modules/weak_set_module.cpp
 )
 
 target_include_directories(spectre PUBLIC include)
@@ -40,7 +78,5 @@ if(SPECTRE_BUILD_TESTS)
     add_test(NAME spectre_runtime COMMAND spectre_tests)
 endif()
 
-
-
-
-
+add_executable(spectre_example_es2025 examples/es2025_production_demo.cpp)
+target_link_libraries(spectre_example_es2025 PRIVATE spectre)

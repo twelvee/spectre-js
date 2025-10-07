@@ -10,6 +10,11 @@
 #include "spectre/status.h"
 #include "spectre/subsystems.h"
 
+namespace spectre::es2025 {
+    class Environment;
+}
+
+
 namespace spectre {
     struct TickInfo {
         double deltaSeconds;
@@ -71,14 +76,16 @@ namespace spectre {
 
         StatusCode GetContext(const std::string &name, const SpectreContext **outContext) const;
 
+        es2025::Environment &EsEnvironment();
+
+        const es2025::Environment &EsEnvironment() const;
+
     private:
         struct Impl;
         std::unique_ptr<Impl> m_Impl;
 
         explicit SpectreRuntime(std::unique_ptr<Impl> impl);
+
+        void InitializeEnvironment(const RuntimeConfig &config);
     };
 }
-
-
-
-
