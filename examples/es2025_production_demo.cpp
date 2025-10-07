@@ -14,6 +14,8 @@
 #include "spectre/es2025/modules/global_module.h"
 #include "spectre/es2025/modules/error_module.h"
 #include "spectre/es2025/modules/function_module.h"
+#include "spectre/es2025/modules/atomics_module.h"
+#include "spectre/es2025/modules/boolean_module.h"
 #include "spectre/es2025/modules/array_module.h"
 
 namespace {
@@ -153,6 +155,99 @@ namespace {
                   << " d2s=" << metrics.transitionsToSparse
                   << " s2d=" << metrics.transitionsToDense << std::endl;
     }
+
+    void DemonstrateAtomicsModule(spectre::es2025::AtomicsModule &atomicsModule) {
+        std::cout << "\nAtomics lane demo" << std::endl;
+        spectre::es2025::AtomicsModule::Handle buffer = 0;
+        if (atomicsModule.CreateBuffer("demo.lanes", 6, buffer) != spectre::StatusCode::Ok) {
+            std::cout << "Atomics module demo unavailable" << std::endl;
+            return;
+        }
+        auto cleanup = [&]() {
+            if (buffer != 0) {
+                atomicsModule.DestroyBuffer(buffer);
+                buffer = 0;
+            }
+        };
+        if (atomicsModule.Fill(buffer, 0) != spectre::StatusCode::Ok) {
+            std::cout << "  fill failed" << std::endl;
+            cleanup();
+            return;
+        }
+        std::int64_t previous = 0;
+        if (atomicsModule.Add(buffer, 0, 256, previous) != spectre::StatusCode::Ok) {
+            std::cout << "  add failed" << std::endl;
+            cleanup();
+            return;
+        }
+        if (atomicsModule.Store(buffer, 1, 7) != spectre::StatusCode::Ok) {
+            std::cout << "  store failed" << std::endl;
+            cleanup();
+            return;
+        }
+        atomicsModule.CompareExchange(buffer, 1, 0, 99, previous);
+        atomicsModule.CompareExchange(buffer, 1, previous, 99, previous);
+        atomicsModule.Add(buffer, 1, 3, previous);
+        atomicsModule.Xor(buffer, 2, 0x5a, previous);
+        atomicsModule.Or(buffer, 3, 0x0f, previous);
+        std::int64_t lane = 0;
+        if (atomicsModule.Load(buffer, 1, lane) == spectre::StatusCode::Ok) {
+            std::cout << "  lane[1] => " << lane << std::endl;
+        }
+        std::vector<std::int64_t> snapshot;
+        if (atomicsModule.Snapshot(buffer, snapshot) == spectre::StatusCode::Ok) {
+            for (std::size_t i = 0; i < snapshot.size(); ++i) {
+                std::cout << "  lane[" << i << "] = " << snapshot[i] << std::endl;
+            }
+        }
+        const auto &metrics = atomicsModule.Metrics();
+        auto activeBuffers = metrics.allocations >= metrics.deallocations
+                               ? metrics.allocations - metrics.deallocations
+                               : 0;
+        std::cout << "Atomics metrics: loads=" << metrics.loadOps
+                  << " stores=" << metrics.storeOps
+                  << " rmw=" << metrics.rmwOps
+                  << " buffers=" << activeBuffers
+                  << " hot=" << metrics.hotBuffers << std::endl;
+        cleanup();
+    }
+
+    void DemonstrateBooleanModule(spectre::es2025::BooleanModule &booleanModule) {
+        std::cout << "\nBoolean cache demo" << std::endl;
+        auto originalFlags = std::cout.flags();
+        std::cout << std::boolalpha;
+        auto trueHandle = booleanModule.Box(true);
+        auto falseHandle = booleanModule.Box(false);
+        bool value = false;
+        if (booleanModule.ValueOf(trueHandle, value) == spectre::StatusCode::Ok) {
+            std::cout << "  canonical true => " << value << std::endl;
+        }
+        if (booleanModule.ValueOf(falseHandle, value) == spectre::StatusCode::Ok) {
+            std::cout << "  canonical false => " << value << std::endl;
+        }
+        std::cout << "  \"  yes  \" => " << booleanModule.ToBoolean("  yes  ") << std::endl;
+        std::cout << "  0.0 => " << booleanModule.ToBoolean(0.0) << std::endl;
+        spectre::es2025::BooleanModule::Handle flag = 0;
+        if (booleanModule.Create("demo.flag", true, flag) == spectre::StatusCode::Ok) {
+            booleanModule.Toggle(flag);
+            if (booleanModule.ValueOf(flag, value) == spectre::StatusCode::Ok) {
+                std::cout << "  flag toggled => " << value << std::endl;
+            }
+            booleanModule.Set(flag, false);
+            if (booleanModule.ValueOf(flag, value) == spectre::StatusCode::Ok) {
+                std::cout << "  flag reset => " << value << std::endl;
+            }
+            booleanModule.Destroy(flag);
+        }
+        const auto &metrics = booleanModule.Metrics();
+        std::cout << "Boolean metrics: conversions=" << metrics.conversions
+                  << " allocations=" << metrics.allocations
+                  << " hot=" << metrics.hotBoxes << std::endl;
+        std::cout.flags(originalFlags);
+    }
+
+
+
 }
 
 int main() {
@@ -198,6 +293,20 @@ int main() {
         return 1;
     }
 
+    auto *atomicsModulePtr = environment.FindModule("Atomics");
+    auto *atomicsModule = dynamic_cast<es2025::AtomicsModule *>(atomicsModulePtr);
+    if (!atomicsModule) {
+        std::cerr << "Atomics module unavailable" << std::endl;
+        return 1;
+    }
+
+    auto *booleanModulePtr = environment.FindModule("Boolean");
+    auto *booleanModule = dynamic_cast<es2025::BooleanModule *>(booleanModulePtr);
+    if (!booleanModule) {
+        std::cerr << "Boolean module unavailable" << std::endl;
+        return 1;
+    }
+
     functionModule->RegisterHostFunction("demo.sum", DemoSumCallback);
     functionModule->RegisterHostFunction("demo.upper", DemoUpperCallback);
 
@@ -217,6 +326,8 @@ int main() {
     EvaluateSampleScripts(*globalModule);
 
     DemonstrateArrayModule(*arrayModule);
+    DemonstrateAtomicsModule(*atomicsModule);
+    DemonstrateBooleanModule(*booleanModule);
 
     std::cout << "\nDemonstrating error capture" << std::endl;
     std::string failingValue;

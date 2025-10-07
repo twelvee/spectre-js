@@ -11,6 +11,8 @@
 #include "spectre/es2025/modules/global_module.h"
 #include "spectre/es2025/modules/error_module.h"
 #include "spectre/es2025/modules/function_module.h"
+#include "spectre/es2025/modules/atomics_module.h"
+#include "spectre/es2025/modules/boolean_module.h"
 #include "spectre/es2025/modules/array_module.h"
 
 namespace {
@@ -795,6 +797,94 @@ namespace {
         return ok;
     }
 
+    bool AtomicsModuleAllocatesAndAtomicallyUpdates() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        auto &environment = runtime->EsEnvironment();
+        auto *atomicsModule = dynamic_cast<spectre::es2025::AtomicsModule *>(environment.FindModule("Atomics"));
+        bool ok = ExpectTrue(atomicsModule != nullptr, "Atomics module available");
+        if (!atomicsModule) {
+            return false;
+        }
+        spectre::es2025::AtomicsModule::Handle handle = 0;
+        ok &= ExpectStatus(atomicsModule->CreateBuffer("test.atomic", 8, handle), StatusCode::Ok, "Create buffer");
+        ok &= ExpectTrue(handle != 0, "Buffer handle assigned");
+        ok &= ExpectTrue(atomicsModule->Capacity(handle) == 8, "Capacity matches request");
+        ok &= ExpectStatus(atomicsModule->Fill(handle, 1), StatusCode::Ok, "Fill baseline");
+        ok &= ExpectStatus(atomicsModule->Store(handle, 3, 42, spectre::es2025::AtomicsModule::MemoryOrder::Release),
+                          StatusCode::Ok, "Store lane");
+        std::int64_t value = 0;
+        ok &= ExpectStatus(atomicsModule->Load(handle, 3, value, spectre::es2025::AtomicsModule::MemoryOrder::Acquire),
+                          StatusCode::Ok, "Load lane");
+        ok &= ExpectTrue(value == 42, "Load observed store");
+        std::int64_t previous = 0;
+        ok &= ExpectStatus(atomicsModule->Add(handle, 3, 5, previous), StatusCode::Ok, "Fetch add");
+        ok &= ExpectTrue(previous == 42, "Fetch add previous value");
+        ok &= ExpectStatus(atomicsModule->Sub(handle, 3, 2, previous), StatusCode::Ok, "Fetch sub");
+        ok &= ExpectTrue(previous == 47, "Fetch sub previous value");
+        ok &= ExpectStatus(atomicsModule->Or(handle, 5, 0xff, previous), StatusCode::Ok, "Fetch or");
+        ok &= ExpectTrue(previous == 1, "Fetch or previous value");
+        ok &= ExpectStatus(atomicsModule->Xor(handle, 5, 0x1, previous), StatusCode::Ok, "Fetch xor");
+        ok &= ExpectTrue(previous == 0xff, "Fetch xor previous value");
+        ok &= ExpectStatus(atomicsModule->And(handle, 5, 0x3, previous), StatusCode::Ok, "Fetch and");
+        ok &= ExpectTrue(previous == 0xfe, "Fetch and previous value");
+        ok &= ExpectStatus(atomicsModule->Exchange(handle, 2, 512, previous), StatusCode::Ok, "Exchange lane");
+        ok &= ExpectTrue(previous == 1, "Exchange previous value");
+        ok &= ExpectStatus(atomicsModule->CompareExchange(handle, 3, 11, 99, previous), StatusCode::Ok, "CAS miss");
+        ok &= ExpectTrue(previous == 45, "CAS miss returns current");
+        ok &= ExpectStatus(atomicsModule->CompareExchange(handle, 3, 45, 99, previous), StatusCode::Ok, "CAS hit");
+        ok &= ExpectTrue(previous == 45, "CAS hit returns expected");
+        std::vector<std::int64_t> snapshot;
+        ok &= ExpectStatus(atomicsModule->Snapshot(handle, snapshot), StatusCode::Ok, "Snapshot buffer");
+        ok &= ExpectTrue(snapshot.size() == 8, "Snapshot size matches length");
+        ok &= ExpectTrue(snapshot[3] == 99, "Snapshot captured CAS result");
+        const auto &metrics = atomicsModule->Metrics();
+        ok &= ExpectTrue(metrics.allocations >= 1, "Allocation metric updated");
+        ok &= ExpectTrue(metrics.loadOps >= 1, "Load metric updated");
+        ok &= ExpectTrue(metrics.storeOps >= 9, "Store metric includes fill");
+        ok &= ExpectTrue(metrics.rmwOps >= 7, "RMW metric updated");
+        ok &= ExpectTrue(metrics.compareExchangeHits >= 1, "CAS hits tracked");
+        ok &= ExpectTrue(metrics.compareExchangeMisses >= 1, "CAS misses tracked");
+        ok &= ExpectStatus(atomicsModule->DestroyBuffer(handle), StatusCode::Ok, "Destroy buffer");
+        ok &= ExpectTrue(!atomicsModule->Has(handle), "Handle removed after destroy");
+        return ok;
+    }
+
+    bool BooleanModuleCastsAndBoxes() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        auto &environment = runtime->EsEnvironment();
+        auto *booleanModule = dynamic_cast<spectre::es2025::BooleanModule *>(environment.FindModule("Boolean"));
+        bool ok = ExpectTrue(booleanModule != nullptr, "Boolean module available");
+        if (!booleanModule) {
+            return false;
+        }
+        ok &= ExpectTrue(booleanModule->ToBoolean(3.14), "Positive double is truthy");
+        ok &= ExpectTrue(!booleanModule->ToBoolean(0.0), "Zero double is falsy");
+        ok &= ExpectTrue(booleanModule->ToBoolean(static_cast<std::int64_t>(-42)), "Negative integer truthy");
+        ok &= ExpectTrue(!booleanModule->ToBoolean(std::string_view("  false  ")), "False string is falsy");
+        ok &= ExpectTrue(booleanModule->ToBoolean("yes"), "Yes string is truthy");
+        auto canonicalTrue = booleanModule->Box(true);
+        auto canonicalFalse = booleanModule->Box(false);
+        ok &= ExpectTrue(booleanModule->Has(canonicalTrue), "Canonical true registered");
+        bool boxedValue = false;
+        ok &= ExpectStatus(booleanModule->ValueOf(canonicalTrue, boxedValue), StatusCode::Ok, "Canonical read");
+        ok &= ExpectTrue(boxedValue, "Canonical true value");
+        spectre::es2025::BooleanModule::Handle handle = 0;
+        ok &= ExpectStatus(booleanModule->Create("temp.flag", false, handle), StatusCode::Ok, "Create boxed flag");
+        ok &= ExpectTrue(booleanModule->Has(handle), "Handle registered");
+        ok &= ExpectStatus(booleanModule->Set(handle, true), StatusCode::Ok, "Set flag");
+        ok &= ExpectStatus(booleanModule->Toggle(handle), StatusCode::Ok, "Toggle flag");
+        ok &= ExpectStatus(booleanModule->ValueOf(handle, boxedValue), StatusCode::Ok, "Read toggled flag");
+        ok &= ExpectTrue(!boxedValue, "Flag toggled back to false");
+        const auto &metrics = booleanModule->Metrics();
+        ok &= ExpectTrue(metrics.conversions >= 3, "Conversions tracked");
+        ok &= ExpectTrue(metrics.allocations >= 1, "Allocations tracked");
+        ok &= ExpectTrue(metrics.canonicalHits >= 2, "Canonical hits tracked");
+        ok &= ExpectStatus(booleanModule->Destroy(handle), StatusCode::Ok, "Destroy boxed flag");
+        ok &= ExpectTrue(!booleanModule->Has(handle), "Box removed from cache");
+        ok &= ExpectStatus(booleanModule->Destroy(canonicalTrue), StatusCode::InvalidArgument, "Canonical box protected");
+        return ok;
+    }
+
     struct TestCase {
         const char *name;
 
@@ -829,6 +919,8 @@ int main() {
         {"ArrayModuleSupportsSparseConversions", ArrayModuleSupportsSparseConversions},
         {"ArrayModuleConcatSliceAndBinarySearch", ArrayModuleConcatSliceAndBinarySearch},
         {"ArrayModuleCloneAndClear", ArrayModuleCloneAndClear},
+        {"AtomicsModuleAllocatesAndAtomicallyUpdates", AtomicsModuleAllocatesAndAtomicallyUpdates},
+        {"BooleanModuleCastsAndBoxes", BooleanModuleCastsAndBoxes},
         {"TickAndReconfigureUpdatesState", TickAndReconfigureUpdatesState}
     };
 
