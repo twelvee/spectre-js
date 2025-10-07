@@ -3,14 +3,45 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <vector>
+#include <algorithm>
+#include <cctype>
 
 #include "spectre/config.h"
 #include "spectre/runtime.h"
 #include "spectre/status.h"
 #include "spectre/es2025/environment.h"
 #include "spectre/es2025/modules/global_module.h"
+#include "spectre/es2025/modules/error_module.h"
+#include "spectre/es2025/modules/function_module.h"
 
 namespace {
+    spectre::StatusCode DemoSumCallback(const std::vector<std::string> &args, std::string &outResult, void *) {
+        long total = 0;
+        for (const auto &value: args) {
+            try {
+                total += std::stol(value);
+            } catch (...) {
+                outResult.clear();
+                return spectre::StatusCode::InvalidArgument;
+            }
+        }
+        outResult = std::to_string(total);
+        return spectre::StatusCode::Ok;
+    }
+
+    spectre::StatusCode DemoUpperCallback(const std::vector<std::string> &args, std::string &outResult, void *) {
+        if (args.empty()) {
+            outResult.clear();
+            return spectre::StatusCode::InvalidArgument;
+        }
+        outResult = args.front();
+        std::transform(outResult.begin(), outResult.end(), outResult.begin(), [](unsigned char c) {
+            return static_cast<char>(std::toupper(c));
+        });
+        return spectre::StatusCode::Ok;
+    }
+
     std::string LoadBootstrapScript() {
         const char *candidates[] = {
             "examples/scripts/global_bootstrap.js",
@@ -101,7 +132,49 @@ int main() {
         return 1;
     }
 
+    auto *errorModulePtr = environment.FindModule("Error");
+    auto *errorModule = dynamic_cast<es2025::ErrorModule *>(errorModulePtr);
+    if (!errorModule) {
+        std::cerr << "Error module unavailable" << std::endl;
+        return 1;
+    }
+
+    auto *functionModulePtr = environment.FindModule("Function");
+    auto *functionModule = dynamic_cast<es2025::FunctionModule *>(functionModulePtr);
+    if (!functionModule) {
+        std::cerr << "Function module unavailable" << std::endl;
+        return 1;
+    }
+
+    functionModule->RegisterHostFunction("demo.sum", DemoSumCallback);
+    functionModule->RegisterHostFunction("demo.upper", DemoUpperCallback);
+
+    std::string hostResult;
+    std::string hostDiagnostics;
+    auto hostStatus = functionModule->InvokeHostFunction("demo.sum", std::vector<std::string>{"10", "20", "5"},
+                                                         hostResult, hostDiagnostics);
+    if (hostStatus == StatusCode::Ok) {
+        std::cout << "Host demo.sum => " << hostResult << std::endl;
+    }
+    hostStatus = functionModule->InvokeHostFunction("demo.upper", std::vector<std::string>{"spectre"}, hostResult,
+                                                    hostDiagnostics);
+    if (hostStatus == StatusCode::Ok) {
+        std::cout << "Host demo.upper => " << hostResult << std::endl;
+    }
+
     EvaluateSampleScripts(*globalModule);
+
+    std::cout << "\nDemonstrating error capture" << std::endl;
+    std::string failingValue;
+    std::string failingDiagnostics;
+    auto errorStatus = globalModule->EvaluateScript("let a = 1;", failingValue, failingDiagnostics, "invalid-script");
+    if (errorStatus != StatusCode::Ok) {
+        std::string formatted;
+        errorModule->RaiseError("SyntaxError",
+                                failingDiagnostics.empty() ? "Script parsing failed" : failingDiagnostics,
+                                globalModule->DefaultContext(), "invalid-script", failingDiagnostics, formatted, nullptr);
+        std::cout << "  captured => " << formatted << std::endl;
+    }
 
     std::cout << "\nSimulating production tick loop" << std::endl;
     DriveHostTicks(*runtime, 3);
@@ -129,3 +202,4 @@ int main() {
     std::cout << "\nES2025 production scaffold ready" << std::endl;
     return 0;
 }
+

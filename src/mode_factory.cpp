@@ -4,6 +4,7 @@
 
 namespace spectre::detail {
     std::unique_ptr<ModeAdapter> CreateSingleThreadAdapter(const RuntimeConfig &config);
+
     std::unique_ptr<ModeAdapter> CreateMultiThreadAdapter(const RuntimeConfig &config);
 
     std::unique_ptr<ModeAdapter> MakeModeAdapter(const RuntimeConfig &config) {

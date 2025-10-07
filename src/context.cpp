@@ -67,4 +67,3 @@ namespace spectre {
         return m_Slots[it->second].version;
     }
 }
-

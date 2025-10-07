@@ -30,3 +30,12 @@ Refer to the stub bodies in es2025/modules/*.cpp for TODO markers that indicate 
 - Hosts can call EvaluateScript to compile and execute inline source against a target context while reusing Spectre caching paths.
 - EnsureContext allows deterministic creation of additional global realms with tuned stack budgets.
 - GPU toggles propagate through OptimizeGpu, enabling module-specific accelerators once implemented.
+
+### Error Module
+- Registers ECMAScript standard error constructors (Error, TypeError, SyntaxError, etc.) and allows hosts to register custom error types.
+- RaiseError produces formatted diagnostics, records call-site metadata, and exposes history inspection/clearing APIs for tooling.
+- Tick integration stamps each error with the latest frame index so realtime systems can correlate faults with frame budgets.
+### Function Module
+- Provides host-facing registry for callable intrinsics with per-frame statistics and deterministic invocation.
+- Hosts can register callbacks via RegisterHostFunction, invoke them synchronously, and inspect call counts/latency through GetStats.
+- GPU toggles propagate for future acceleration paths, mirroring other ES2025 modules.

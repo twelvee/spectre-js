@@ -1,5 +1,4 @@
-﻿
-#include "spectre/subsystems.h"
+﻿#include "spectre/subsystems.h"
 
 #include <algorithm>
 #include <array>
@@ -22,7 +21,7 @@ namespace spectre::detail {
 
         std::uint64_t HashString(std::string_view value) {
             std::uint64_t hash = kFnvOffset;
-            for (unsigned char ch : value) {
+            for (unsigned char ch: value) {
                 hash ^= ch;
                 hash *= kFnvPrime;
             }
@@ -31,7 +30,7 @@ namespace spectre::detail {
 
         std::uint64_t HashBytes(const std::vector<std::uint8_t> &bytes) {
             std::uint64_t hash = kFnvOffset;
-            for (auto b : bytes) {
+            for (auto b: bytes) {
                 hash ^= static_cast<std::uint64_t>(b);
                 hash *= kFnvPrime;
             }
@@ -39,7 +38,7 @@ namespace spectre::detail {
         }
 
         std::string ToHex(std::uint64_t value) {
-            std::array<char, 17> buffer{};
+            std::array < char, 17 > buffer{};
             for (int i = 0; i < 16; ++i) {
                 auto shift = static_cast<unsigned>((15 - i) * 4);
                 auto digit = static_cast<unsigned>((value >> shift) & 0xFULL);

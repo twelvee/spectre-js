@@ -9,6 +9,8 @@
 #include "spectre/subsystems.h"
 #include "spectre/es2025/environment.h"
 #include "spectre/es2025/modules/global_module.h"
+#include "spectre/es2025/modules/error_module.h"
+#include "spectre/es2025/modules/function_module.h"
 
 namespace {
     using spectre::RuntimeConfig;
@@ -38,6 +40,29 @@ namespace {
         auto config = spectre::MakeDefaultConfig();
         config.mode = mode;
         return config;
+    }
+
+    StatusCode AddCallback(const std::vector<std::string> &args, std::string &outResult, void *) {
+        long total = 0;
+        for (const auto &value: args) {
+            try {
+                total += std::stol(value);
+            } catch (...) {
+                outResult.clear();
+                return StatusCode::InvalidArgument;
+            }
+        }
+        outResult = std::to_string(total);
+        return StatusCode::Ok;
+    }
+
+    StatusCode EchoCallback(const std::vector<std::string> &args, std::string &outResult, void *) {
+        if (args.empty()) {
+            outResult.clear();
+            return StatusCode::InvalidArgument;
+        }
+        outResult = args.front();
+        return StatusCode::Ok;
     }
 
     bool DefaultConfigPopulatesDefaults() {
@@ -432,6 +457,200 @@ namespace {
         return ok;
     }
 
+    bool ErrorModuleRegistersBuiltins() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        bool ok = ExpectTrue(runtime != nullptr, "Runtime created");
+        if (!runtime) {
+            return false;
+        }
+        auto &environment = runtime->EsEnvironment();
+        auto *errorModule = dynamic_cast<spectre::es2025::ErrorModule *>(environment.FindModule("Error"));
+        ok &= ExpectTrue(errorModule != nullptr, "Error module available");
+        if (!errorModule) {
+            return false;
+        }
+        const char *types[] = {
+            "Error", "EvalError", "RangeError", "ReferenceError", "SyntaxError", "TypeError", "URIError",
+            "AggregateError"
+        };
+        for (const auto *type: types) {
+            ok &= ExpectTrue(errorModule->HasErrorType(type), std::string("Missing builtin error type ") + type);
+        }
+        ok &= ExpectTrue(errorModule->History().empty(), "History should start empty");
+        return ok;
+    }
+
+    bool ErrorModuleRaisesAndTracksHistory() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        bool ok = ExpectTrue(runtime != nullptr, "Runtime created");
+        if (!runtime) {
+            return false;
+        }
+        auto &environment = runtime->EsEnvironment();
+        auto *errorModule = dynamic_cast<spectre::es2025::ErrorModule *>(environment.FindModule("Error"));
+        ok &= ExpectTrue(errorModule != nullptr, "Error module available");
+        if (!errorModule) {
+            return false;
+        }
+        spectre::TickInfo tick{0.016, 42};
+        runtime->Tick(tick);
+
+        std::string formatted;
+        spectre::es2025::ErrorRecord record{};
+        auto status = errorModule->RaiseError("TypeError", "Unsupported operand", "global.main", "demo",
+                                              "operands must be numbers", formatted, &record);
+        ok &= ExpectStatus(status, StatusCode::Ok, "RaiseError succeeds");
+        ok &= ExpectTrue(!formatted.empty(), "Formatted error available");
+        ok &= ExpectTrue(formatted.find("TypeError") != std::string::npos, "Formatted includes type");
+        ok &= ExpectTrue(formatted.find("Unsupported operand") != std::string::npos, "Formatted includes message");
+        ok &= ExpectTrue(record.frameIndex == 42, "Frame tracked");
+        ok &= ExpectTrue(record.type == "TypeError", "Record type");
+        ok &= ExpectTrue(record.message == "Unsupported operand", "Record message");
+        ok &= ExpectTrue(record.contextName == "global.main", "Record context");
+        ok &= ExpectTrue(record.scriptName == "demo", "Record script");
+        ok &= ExpectTrue(record.diagnostics == "operands must be numbers", "Record diagnostics");
+        ok &= ExpectTrue(!errorModule->History().empty(), "History populated");
+        const auto *last = errorModule->LastError();
+        ok &= ExpectTrue(last != nullptr, "LastError available");
+        if (last != nullptr) {
+            ok &= ExpectTrue(last->type == record.type, "LastError matches");
+        }
+        return ok;
+    }
+
+    bool ErrorModuleDrainsHistory() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        bool ok = ExpectTrue(runtime != nullptr, "Runtime created");
+        if (!runtime) {
+            return false;
+        }
+        auto &environment = runtime->EsEnvironment();
+        auto *errorModule = dynamic_cast<spectre::es2025::ErrorModule *>(environment.FindModule("Error"));
+        ok &= ExpectTrue(errorModule != nullptr, "Error module available");
+        if (!errorModule) {
+            return false;
+        }
+        std::string formatted;
+        errorModule->RaiseError("Error", "First", "global", "a", "", formatted, nullptr);
+        errorModule->RaiseError("Error", "Second", "global", "b", "", formatted, nullptr);
+
+        auto drained = errorModule->DrainHistory();
+        ok &= ExpectTrue(drained.size() == 2, "Drain size");
+        ok &= ExpectTrue(errorModule->History().empty(), "History cleared");
+        errorModule->RaiseError("Error", "Third", "global", "c", "", formatted, nullptr);
+        errorModule->ClearHistory();
+        ok &= ExpectTrue(errorModule->History().empty(), "History cleared explicit");
+        return ok;
+    }
+
+    bool ErrorModuleSupportsCustomTypes() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        bool ok = ExpectTrue(runtime != nullptr, "Runtime created");
+        if (!runtime) {
+            return false;
+        }
+        auto &environment = runtime->EsEnvironment();
+        auto *errorModule = dynamic_cast<spectre::es2025::ErrorModule *>(environment.FindModule("Error"));
+        ok &= ExpectTrue(errorModule != nullptr, "Error module available");
+        if (!errorModule) {
+            return false;
+        }
+        auto status = errorModule->RegisterErrorType("ScriptError", "Script failure");
+        ok &= ExpectStatus(status, StatusCode::Ok, "Register custom type");
+        ok &= ExpectTrue(errorModule->HasErrorType("ScriptError"), "Custom type registered");
+        std::string formatted;
+        status = errorModule->RaiseError("ScriptError", "Fatal", "global.main", "script", "runtime", formatted,
+                                         nullptr);
+        ok &= ExpectStatus(status, StatusCode::Ok, "Raise custom error");
+        ok &= ExpectTrue(formatted.find("ScriptError") != std::string::npos, "Formatted custom type");
+        return ok;
+    }
+
+    bool FunctionModuleRegistersAndInvokes() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        bool ok = ExpectTrue(runtime != nullptr, "Runtime created");
+        if (!runtime) {
+            return false;
+        }
+        auto &environment = runtime->EsEnvironment();
+        auto *functionModule = dynamic_cast<spectre::es2025::FunctionModule *>(environment.FindModule("Function"));
+        ok &= ExpectTrue(functionModule != nullptr, "Function module available");
+        if (!functionModule) {
+            return false;
+        }
+        auto status = functionModule->RegisterHostFunction("sum", AddCallback);
+        ok &= ExpectStatus(status, StatusCode::Ok, "Register sum");
+        status = functionModule->RegisterHostFunction("echo", EchoCallback);
+        ok &= ExpectStatus(status, StatusCode::Ok, "Register echo");
+        std::string result;
+        std::string diagnostics;
+        status = functionModule->
+                InvokeHostFunction("sum", std::vector<std::string>{"4", "5", "6"}, result, diagnostics);
+        ok &= ExpectStatus(status, StatusCode::Ok, "Invoke sum");
+        ok &= ExpectTrue(result == "15", "Sum result");
+        status = functionModule->InvokeHostFunction("echo", std::vector<std::string>{"spectre"}, result, diagnostics);
+        ok &= ExpectStatus(status, StatusCode::Ok, "Invoke echo");
+        ok &= ExpectTrue(result == "spectre", "Echo result");
+        const auto *stats = functionModule->GetStats("sum");
+        ok &= ExpectTrue(stats != nullptr, "Stats available");
+        if (stats != nullptr) {
+            ok &= ExpectTrue(stats->callCount == 1, "Sum call count");
+        }
+        return ok;
+    }
+
+    bool FunctionModuleHandlesDuplicatesAndRemoval() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        bool ok = ExpectTrue(runtime != nullptr, "Runtime created");
+        if (!runtime) {
+            return false;
+        }
+        auto &environment = runtime->EsEnvironment();
+        auto *functionModule = dynamic_cast<spectre::es2025::FunctionModule *>(environment.FindModule("Function"));
+        ok &= ExpectTrue(functionModule != nullptr, "Function module available");
+        if (!functionModule) {
+            return false;
+        }
+        auto status = functionModule->RegisterHostFunction("sum", AddCallback);
+        ok &= ExpectStatus(status, StatusCode::Ok, "Register sum");
+        status = functionModule->RegisterHostFunction("sum", EchoCallback);
+        ok &= ExpectStatus(status, StatusCode::AlreadyExists, "Duplicate rejected");
+        status = functionModule->RegisterHostFunction("sum", EchoCallback, nullptr, true);
+        ok &= ExpectStatus(status, StatusCode::Ok, "Overwrite allowed");
+        status = functionModule->RemoveHostFunction("sum");
+        ok &= ExpectStatus(status, StatusCode::Ok, "Remove sum");
+        ok &= ExpectTrue(!functionModule->HasHostFunction("sum"), "Sum removed");
+        std::string result;
+        std::string diagnostics;
+        status = functionModule->InvokeHostFunction("sum", std::vector<std::string>{}, result, diagnostics);
+        ok &= ExpectStatus(status, StatusCode::NotFound, "Invoke removed function");
+        functionModule->Clear();
+        ok &= ExpectTrue(functionModule->RegisteredNames().empty(), "Registry cleared");
+        return ok;
+    }
+
+    bool FunctionModuleGpuToggle() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        bool ok = ExpectTrue(runtime != nullptr, "Runtime created");
+        if (!runtime) {
+            return false;
+        }
+        auto &environment = runtime->EsEnvironment();
+        auto *functionModule = dynamic_cast<spectre::es2025::FunctionModule *>(environment.FindModule("Function"));
+        ok &= ExpectTrue(functionModule != nullptr, "Function module available");
+        if (!functionModule) {
+            return false;
+        }
+        ok &= ExpectTrue(!functionModule->GpuEnabled(), "GPU disabled");
+        auto config = runtime->Config();
+        config.enableGpuAcceleration = true;
+        auto status = runtime->Reconfigure(config);
+        ok &= ExpectStatus(status, StatusCode::Ok, "Runtime reconfigure");
+        environment.OptimizeGpu(true);
+        ok &= ExpectTrue(functionModule->GpuEnabled(), "GPU enabled");
+        return ok;
+    }
+
     struct TestCase {
         const char *name;
 
@@ -455,6 +674,13 @@ int main() {
         {"GlobalModuleInitializesDefaultContext", GlobalModuleInitializesDefaultContext},
         {"GlobalModuleEvaluatesScripts", GlobalModuleEvaluatesScripts},
         {"GlobalModuleReconfigureTogglesGpu", GlobalModuleReconfigureTogglesGpu},
+        {"ErrorModuleRegistersBuiltins", ErrorModuleRegistersBuiltins},
+        {"ErrorModuleRaisesAndTracksHistory", ErrorModuleRaisesAndTracksHistory},
+        {"ErrorModuleDrainsHistory", ErrorModuleDrainsHistory},
+        {"ErrorModuleSupportsCustomTypes", ErrorModuleSupportsCustomTypes},
+        {"FunctionModuleRegistersAndInvokes", FunctionModuleRegistersAndInvokes},
+        {"FunctionModuleHandlesDuplicatesAndRemoval", FunctionModuleHandlesDuplicatesAndRemoval},
+        {"FunctionModuleGpuToggle", FunctionModuleGpuToggle},
         {"TickAndReconfigureUpdatesState", TickAndReconfigureUpdatesState}
     };
 
