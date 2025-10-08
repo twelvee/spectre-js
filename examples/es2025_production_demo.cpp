@@ -21,6 +21,7 @@
 #include "spectre/es2025/modules/error_module.h"
 #include "spectre/es2025/modules/function_module.h"
 #include "spectre/es2025/modules/async_function_module.h"
+#include "spectre/es2025/modules/promise_module.h"
 #include "spectre/es2025/modules/atomics_module.h"
 #include "spectre/es2025/modules/boolean_module.h"
 #include "spectre/es2025/modules/array_module.h"
@@ -93,6 +94,41 @@ namespace {
         auto *message = static_cast<const char *>(userData);
         outValue = spectre::es2025::Value::String(message != nullptr ? std::string_view(message) : "async-demo");
         outDiagnostics = "resolved";
+        return spectre::StatusCode::Ok;
+    }
+
+    struct DemoPromisePayload {
+        int factor;
+        bool invoked;
+    };
+
+    spectre::StatusCode DemoPromiseFulfillCallback(void *userData,
+                                                   const spectre::es2025::Value &input,
+                                                   spectre::es2025::Value &outValue,
+                                                   std::string &outDiagnostics) {
+        auto *payload = static_cast<DemoPromisePayload *>(userData);
+        if (payload) {
+            payload->invoked = true;
+            auto value = input.AsNumber(0.0) * static_cast<double>(payload->factor);
+            outValue = spectre::es2025::Value::Number(value);
+        } else {
+            outValue = input;
+        }
+        outDiagnostics = "promise-scaled";
+        return spectre::StatusCode::Ok;
+    }
+
+    spectre::StatusCode DemoPromiseRejectCallback(void *userData,
+                                                  const spectre::es2025::Value &input,
+                                                  spectre::es2025::Value &outValue,
+                                                  std::string &outDiagnostics) {
+        auto *payload = static_cast<DemoPromisePayload *>(userData);
+        if (payload) {
+            payload->invoked = true;
+        }
+        (void) input;
+        outValue = spectre::es2025::Value::String("promise-recovered");
+        outDiagnostics = "promise-handled";
         return spectre::StatusCode::Ok;
     }
 
@@ -233,6 +269,112 @@ namespace {
         std::cout << "  pending after ticks: " << asyncModule.PendingCount() << std::endl;
         std::cout << "  fast resolved=" << (fastResolved ? "yes" : "no")
                 << " delayed resolved=" << (delayedResolved ? "yes" : "no") << std::endl;
+    }
+
+    void DemonstratePromiseModule(spectre::es2025::PromiseModule &promiseModule,
+                                  spectre::SpectreRuntime &runtime) {
+        std::cout << "\nPromise microtask demo" << std::endl;
+        if (promiseModule.Configure(32, 64) != spectre::StatusCode::Ok) {
+            std::cout << "  promise module unavailable" << std::endl;
+            return;
+        }
+
+        auto stateName = [](spectre::es2025::PromiseModule::State state) {
+            switch (state) {
+                case spectre::es2025::PromiseModule::State::Pending:
+                    return "pending";
+                case spectre::es2025::PromiseModule::State::Fulfilled:
+                    return "fulfilled";
+                case spectre::es2025::PromiseModule::State::Rejected:
+                    return "rejected";
+                case spectre::es2025::PromiseModule::State::Cancelled:
+                    return "cancelled";
+            }
+            return "unknown";
+        };
+
+        spectre::es2025::PromiseModule::Handle resolveRoot = 0;
+        spectre::es2025::PromiseModule::Handle resolveScaled = 0;
+        DemoPromisePayload fulfillPayload{4, false};
+
+        if (promiseModule.CreatePromise(resolveRoot, {"promise.resolve"}) == spectre::StatusCode::Ok) {
+            spectre::es2025::PromiseModule::ReactionOptions options{};
+            options.onFulfilled = DemoPromiseFulfillCallback;
+            options.userData = &fulfillPayload;
+            options.label = "promise.scale";
+            if (promiseModule.Then(resolveRoot, resolveScaled, options) == spectre::StatusCode::Ok) {
+                promiseModule.Resolve(resolveRoot, spectre::es2025::Value::Number(2.5), "ready");
+            }
+        }
+
+        runtime.Tick({0.0, 0});
+
+        std::vector<spectre::es2025::PromiseModule::SettledPromise> settled;
+        promiseModule.DrainSettled(settled);
+        for (const auto &entry: settled) {
+            std::cout << "  [" << entry.label.data() << "] state=" << stateName(entry.state)
+                    << " value=" << entry.value.ToString()
+                    << " diag=" << entry.diagnostics << std::endl;
+        }
+        settled.clear();
+
+        spectre::es2025::PromiseModule::Handle rejectRoot = 0;
+        spectre::es2025::PromiseModule::Handle recovered = 0;
+        DemoPromisePayload rejectPayload{1, false};
+        if (promiseModule.CreatePromise(rejectRoot, {"promise.reject"}) == spectre::StatusCode::Ok) {
+            spectre::es2025::PromiseModule::ReactionOptions rejectOptions{};
+            rejectOptions.onRejected = DemoPromiseRejectCallback;
+            rejectOptions.userData = &rejectPayload;
+            rejectOptions.label = "promise.recover";
+            if (promiseModule.Then(rejectRoot, recovered, rejectOptions) == spectre::StatusCode::Ok) {
+                promiseModule.Reject(rejectRoot, "demo-error", spectre::es2025::Value::String("payload"));
+            }
+        }
+
+        runtime.Tick({0.0, 1});
+        promiseModule.DrainSettled(settled);
+        for (const auto &entry: settled) {
+            std::cout << "  [" << entry.label.data() << "] state=" << stateName(entry.state)
+                    << " value=" << entry.value.ToString()
+                    << " diag=" << entry.diagnostics << std::endl;
+        }
+        settled.clear();
+
+        spectre::es2025::PromiseModule::Handle cancelled = 0;
+        if (promiseModule.CreatePromise(cancelled, {"promise.cancel"}) == spectre::StatusCode::Ok) {
+            promiseModule.Cancel(cancelled);
+        }
+
+        runtime.Tick({0.0, 2});
+        promiseModule.DrainSettled(settled);
+        for (const auto &entry: settled) {
+            std::cout << "  [" << entry.label.data() << "] state=" << stateName(entry.state)
+                    << " value=" << entry.value.ToString()
+                    << " diag=" << entry.diagnostics << std::endl;
+        }
+
+        const auto &metrics = promiseModule.GetMetrics();
+        std::cout << "  metrics created=" << metrics.created
+                << " resolved=" << metrics.resolved
+                << " rejected=" << metrics.rejected
+                << " cancelled=" << metrics.cancelled
+                << " reactions=" << metrics.executedReactions << std::endl;
+
+        if (resolveRoot != spectre::es2025::PromiseModule::kInvalidHandle) {
+            promiseModule.Release(resolveRoot);
+        }
+        if (resolveScaled != spectre::es2025::PromiseModule::kInvalidHandle) {
+            promiseModule.Release(resolveScaled);
+        }
+        if (rejectRoot != spectre::es2025::PromiseModule::kInvalidHandle) {
+            promiseModule.Release(rejectRoot);
+        }
+        if (recovered != spectre::es2025::PromiseModule::kInvalidHandle) {
+            promiseModule.Release(recovered);
+        }
+        if (cancelled != spectre::es2025::PromiseModule::kInvalidHandle) {
+            promiseModule.Release(cancelled);
+        }
     }
 
     void DemonstrateArrayModule(spectre::es2025::ArrayModule &arrayModule) {
@@ -1295,6 +1437,13 @@ int main() {
         return 1;
     }
 
+    auto *promiseModulePtr = environment.FindModule("Promise");
+    auto *promiseModule = dynamic_cast<es2025::PromiseModule *>(promiseModulePtr);
+    if (!promiseModule) {
+        std::cerr << "Promise module unavailable" << std::endl;
+        return 1;
+    }
+
     auto *iteratorModulePtr = environment.FindModule("Iterator");
     auto *iteratorModule = dynamic_cast<es2025::IteratorModule *>(iteratorModulePtr);
     if (!iteratorModule) {
@@ -1413,6 +1562,7 @@ int main() {
     DemonstrateIteratorModule(*iteratorModule);
     DemonstrateGeneratorModule(*generatorModule, *iteratorModule);
     DemonstrateAsyncFunctionModule(*asyncFunctionModule, *runtime);
+    DemonstratePromiseModule(*promiseModule, *runtime);
     DemonstrateArrayModule(*arrayModule);
     DemonstrateArrayBufferModule(*arrayBufferModule);
     DemonstrateTypedArrayModule(*typedArrayModule);

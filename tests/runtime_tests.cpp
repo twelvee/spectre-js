@@ -30,6 +30,7 @@
 #include "spectre/es2025/modules/array_buffer_module.h"
 #include "spectre/es2025/modules/iterator_module.h"
 #include "spectre/es2025/modules/generator_module.h"
+#include "spectre/es2025/modules/promise_module.h"
 #include "spectre/es2025/modules/math_module.h"
 #include "spectre/es2025/modules/number_module.h"
 #include "spectre/es2025/modules/bigint_module.h"
@@ -116,6 +117,43 @@ namespace {
         outValue = spectre::es2025::Value::Undefined();
         outDiagnostics = "async failure";
         return StatusCode::InvalidArgument;
+    }
+
+    struct PromiseReactionPayload {
+        bool invoked;
+        int scale;
+        std::string lastDiagnostics;
+    };
+
+    StatusCode PromiseFulfillCallback(void *userData,
+                                      const spectre::es2025::Value &input,
+                                      spectre::es2025::Value &outValue,
+                                      std::string &outDiagnostics) {
+        auto *payload = static_cast<PromiseReactionPayload *>(userData);
+        if (payload) {
+            payload->invoked = true;
+            payload->lastDiagnostics = input.ToString();
+            auto scaled = input.AsNumber(0.0) * static_cast<double>(payload->scale);
+            outValue = spectre::es2025::Value::Number(scaled);
+        } else {
+            outValue = input;
+        }
+        outDiagnostics = "scaled";
+        return StatusCode::Ok;
+    }
+
+    StatusCode PromiseRejectCallback(void *userData,
+                                     const spectre::es2025::Value &input,
+                                     spectre::es2025::Value &outValue,
+                                     std::string &outDiagnostics) {
+        auto *payload = static_cast<PromiseReactionPayload *>(userData);
+        if (payload) {
+            payload->invoked = true;
+            payload->lastDiagnostics = input.ToString();
+        }
+        outValue = spectre::es2025::Value::String("recovered");
+        outDiagnostics = "handled";
+        return StatusCode::Ok;
     }
 
     bool DefaultConfigPopulatesDefaults() {
@@ -914,6 +952,146 @@ namespace {
         ok &= ExpectTrue(singleInvoked, "Single callback invoked");
         ok &= ExpectTrue(module->PendingCount() == 0, "Pending queue drained after overflow test");
 
+        return ok;
+    }
+
+    bool PromiseModuleResolvesAndChains() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        bool ok = ExpectTrue(runtime != nullptr, "Runtime created");
+        if (!runtime) {
+            return false;
+        }
+        auto &environment = runtime->EsEnvironment();
+        auto *module = dynamic_cast<spectre::es2025::PromiseModule *>(environment.FindModule("Promise"));
+        ok &= ExpectTrue(module != nullptr, "Promise module available");
+        if (!module) {
+            return false;
+        }
+        ok &= ExpectStatus(module->Configure(16, 32), StatusCode::Ok, "Configure promise module");
+
+        spectre::es2025::PromiseModule::Handle root = 0;
+        ok &= ExpectStatus(module->CreatePromise(root, {"root"}), StatusCode::Ok, "Create root promise");
+
+        PromiseReactionPayload payload{false, 3, {}};
+        spectre::es2025::PromiseModule::Handle derived = 0;
+        spectre::es2025::PromiseModule::ReactionOptions reaction{};
+        reaction.onFulfilled = PromiseFulfillCallback;
+        reaction.userData = &payload;
+        reaction.label = "derived";
+        ok &= ExpectStatus(module->Then(root, derived, reaction), StatusCode::Ok, "Register then handler");
+
+        ok &= ExpectStatus(module->Resolve(root, spectre::es2025::Value::Number(5.0), "initial"), StatusCode::Ok,
+                          "Resolve root");
+        ok &= ExpectTrue(module->PendingMicrotasks() == 1, "Microtask queued");
+
+        runtime->Tick({0.0, 0});
+        ok &= ExpectTrue(module->PendingMicrotasks() == 0, "Microtask drained");
+
+        std::vector<spectre::es2025::PromiseModule::SettledPromise> settled;
+        module->DrainSettled(settled);
+        ok &= ExpectTrue(settled.size() == 2, "Two promises settled");
+        bool rootVerified = false;
+        bool derivedVerified = false;
+        for (const auto &entry: settled) {
+            if (entry.handle == root) {
+                rootVerified = true;
+                ok &= ExpectTrue(entry.state == spectre::es2025::PromiseModule::State::Fulfilled,
+                                 "Root fulfilled state");
+                ok &= ExpectTrue(entry.value.AsNumber(-1.0) == 5.0, "Root value stored");
+            } else if (entry.handle == derived) {
+                derivedVerified = true;
+                ok &= ExpectTrue(entry.state == spectre::es2025::PromiseModule::State::Fulfilled,
+                                 "Derived fulfilled state");
+                ok &= ExpectTrue(entry.value.AsNumber(-1.0) == 15.0, "Derived value");
+                ok &= ExpectTrue(entry.diagnostics == "scaled", "Derived diagnostics");
+            }
+        }
+        ok &= ExpectTrue(rootVerified, "Root entry recorded");
+        ok &= ExpectTrue(derivedVerified, "Derived entry recorded");
+        ok &= ExpectTrue(payload.invoked, "Fulfill handler invoked");
+
+        auto state = module->GetState(derived);
+        ok &= ExpectTrue(state == spectre::es2025::PromiseModule::State::Fulfilled,
+                         "Derived state API");
+
+        const auto &metrics = module->GetMetrics();
+        ok &= ExpectTrue(metrics.created >= 2, "Metrics created count");
+        ok &= ExpectTrue(metrics.resolved >= 2, "Metrics resolved count");
+        ok &= ExpectTrue(metrics.executedReactions >= 1, "Metrics executed reactions");
+
+        ok &= ExpectStatus(module->Release(root), StatusCode::Ok, "Release root");
+        ok &= ExpectStatus(module->Release(derived), StatusCode::Ok, "Release derived");
+        return ok;
+    }
+
+    bool PromiseModuleHandlesRejectionFlow() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        bool ok = ExpectTrue(runtime != nullptr, "Runtime created");
+        if (!runtime) {
+            return false;
+        }
+        auto &environment = runtime->EsEnvironment();
+        auto *module = dynamic_cast<spectre::es2025::PromiseModule *>(environment.FindModule("Promise"));
+        ok &= ExpectTrue(module != nullptr, "Promise module available");
+        if (!module) {
+            return false;
+        }
+        ok &= ExpectStatus(module->Configure(16, 32), StatusCode::Ok, "Configure promise module");
+
+        spectre::es2025::PromiseModule::Handle root = 0;
+        ok &= ExpectStatus(module->CreatePromise(root, {"root"}), StatusCode::Ok, "Create root promise");
+
+        spectre::es2025::PromiseModule::Handle propagated = 0;
+        ok &= ExpectStatus(module->Then(root, propagated), StatusCode::Ok, "Chain without handler");
+
+        PromiseReactionPayload rejectPayload{false, 1, {}};
+        spectre::es2025::PromiseModule::Handle recovered = 0;
+        spectre::es2025::PromiseModule::ReactionOptions rejectOptions{};
+        rejectOptions.onRejected = PromiseRejectCallback;
+        rejectOptions.userData = &rejectPayload;
+        rejectOptions.label = "recover";
+        ok &= ExpectStatus(module->Then(propagated, recovered, rejectOptions), StatusCode::Ok,
+                          "Chain rejection handler");
+
+        ok &= ExpectStatus(module->Reject(root, "boom", spectre::es2025::Value::String("root")), StatusCode::Ok,
+                          "Reject root");
+
+        runtime->Tick({0.0, 0});
+
+        std::vector<spectre::es2025::PromiseModule::SettledPromise> settled;
+        module->DrainSettled(settled);
+        ok &= ExpectTrue(settled.size() == 3, "Three settlements recorded");
+
+        auto stateRoot = module->GetState(root);
+        auto statePropagated = module->GetState(propagated);
+        auto stateRecovered = module->GetState(recovered);
+        ok &= ExpectTrue(stateRoot == spectre::es2025::PromiseModule::State::Rejected, "Root rejected");
+        ok &= ExpectTrue(statePropagated == spectre::es2025::PromiseModule::State::Rejected,
+                         "Propagation rejected");
+        ok &= ExpectTrue(stateRecovered == spectre::es2025::PromiseModule::State::Fulfilled,
+                         "Recovery fulfilled");
+        ok &= ExpectTrue(rejectPayload.invoked, "Rejection handler invoked");
+
+        spectre::es2025::PromiseModule::Handle cancelled = 0;
+        ok &= ExpectStatus(module->CreatePromise(cancelled, {"cancel"}), StatusCode::Ok, "Create cancellable");
+        ok &= ExpectTrue(module->Cancel(cancelled), "Cancel promise");
+        runtime->Tick({0.0, 1});
+        std::vector<spectre::es2025::PromiseModule::SettledPromise> cancelDrain;
+        module->DrainSettled(cancelDrain);
+        ok &= ExpectTrue(cancelDrain.size() == 1, "Cancellation recorded");
+        if (!cancelDrain.empty()) {
+            ok &= ExpectTrue(cancelDrain.front().state == spectre::es2025::PromiseModule::State::Cancelled,
+                             "Cancellation state");
+        }
+
+        const auto &metrics = module->GetMetrics();
+        ok &= ExpectTrue(metrics.rejected >= 2, "Metrics rejected count");
+        ok &= ExpectTrue(metrics.cancelled >= 1, "Metrics cancelled count");
+
+        ok &= ExpectStatus(module->Release(root), StatusCode::Ok, "Release root");
+        ok &= ExpectStatus(module->Release(propagated), StatusCode::Ok, "Release propagated");
+        ok &= ExpectStatus(module->Release(recovered), StatusCode::Ok, "Release recovered");
+        ok &= ExpectStatus(module->Release(cancelled), StatusCode::Ok, "Release cancelled");
         return ok;
     }
 
@@ -2364,6 +2542,8 @@ int main() {
         {"ErrorModuleSupportsCustomTypes", ErrorModuleSupportsCustomTypes},
         {"AsyncFunctionModuleDispatchesJobs", AsyncFunctionModuleDispatchesJobs},
         {"AsyncFunctionModuleHandlesDelaysAndCancellation", AsyncFunctionModuleHandlesDelaysAndCancellation},
+        {"PromiseModuleResolvesAndChains", PromiseModuleResolvesAndChains},
+        {"PromiseModuleHandlesRejectionFlow", PromiseModuleHandlesRejectionFlow},
         {"FunctionModuleRegistersAndInvokes", FunctionModuleRegistersAndInvokes},
         {"FunctionModuleHandlesDuplicatesAndRemoval", FunctionModuleHandlesDuplicatesAndRemoval},
         {"FunctionModuleGpuToggle", FunctionModuleGpuToggle},
