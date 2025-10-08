@@ -43,6 +43,8 @@
 #include "spectre/es2025/modules/weak_set_module.h"
 #include "spectre/es2025/modules/weak_map_module.h"
 #include "spectre/es2025/modules/weak_ref_module.h"
+#include "spectre/es2025/modules/shadow_realm_module.h"
+#include "spectre/es2025/modules/temporal_module.h"
 #include "spectre/es2025/value.h"
 
 namespace {
@@ -1570,7 +1572,95 @@ void DemonstrateGeneratorModule(spectre::es2025::GeneratorModule &generatorModul
 
     generatorModule.Destroy(handle);
 }
+void DemonstrateTemporalModule(spectre::es2025::TemporalModule &temporalModule) {
+    std::cout << "\nTemporal module timeline" << std::endl;
+    const auto canonical = temporalModule.CanonicalEpoch();
+    std::cout << "  canonical epoch ns " << temporalModule.EpochNanoseconds(canonical, -1) << std::endl;
+
+    spectre::es2025::TemporalModule::PlainDateTime meetup{};
+    meetup.year = 2025;
+    meetup.month = 3;
+    meetup.day = 9;
+    meetup.hour = 18;
+    meetup.minute = 45;
+    meetup.second = 0;
+    meetup.millisecond = 0;
+    meetup.microsecond = 0;
+    meetup.nanosecond = 0;
+
+    spectre::es2025::TemporalModule::Handle meetupHandle = 0;
+    if (temporalModule.CreateInstant(meetup, 60, "meetup", meetupHandle) != spectre::StatusCode::Ok) {
+        std::cout << "  failed to create meetup instant" << std::endl;
+        return;
+    }
+
+    spectre::es2025::TemporalModule::PlainDateTime meetupLocal{};
+    temporalModule.ToPlainDateTime(meetupHandle, 60, meetupLocal);
+    std::cout << "  meetup local time "
+              << meetupLocal.year << "-" << meetupLocal.month << "-" << meetupLocal.day << " "
+              << meetupLocal.hour << ":" << meetupLocal.minute << std::endl;
+
+    auto reminderDuration = spectre::es2025::TemporalModule::Duration::FromComponents(0, -1, -15, 0, 0, 0, 0);
+    spectre::es2025::TemporalModule::Handle reminderHandle = 0;
+    if (temporalModule.AddDuration(meetupHandle, reminderDuration, "meetup.reminder", reminderHandle)
+        == spectre::StatusCode::Ok) {
+        spectre::es2025::TemporalModule::PlainDateTime reminder{};
+        temporalModule.ToPlainDateTime(reminderHandle, 60, reminder);
+        std::cout << "  reminder time " << reminder.hour << ":" << reminder.minute << std::endl;
+        temporalModule.Destroy(reminderHandle);
+    }
+
+    auto fineTune = spectre::es2025::TemporalModule::Duration::FromComponents(0, 0, 5, 0, 0, 0, 0);
+    temporalModule.AddDurationInPlace(meetupHandle, fineTune);
+    spectre::es2025::TemporalModule::Handle roundedHandle = 0;
+    if (temporalModule.Round(meetupHandle,
+                              15,
+                              spectre::es2025::TemporalModule::Unit::Minute,
+                              spectre::es2025::TemporalModule::RoundingMode::HalfExpand,
+                              "meetup.rounded",
+                              roundedHandle) == spectre::StatusCode::Ok) {
+        spectre::es2025::TemporalModule::PlainDateTime rounded{};
+        temporalModule.ToPlainDateTime(roundedHandle, 60, rounded);
+        std::cout << "  rounded start " << rounded.hour << ":" << rounded.minute << std::endl;
+        temporalModule.Destroy(roundedHandle);
+    }
+
+    temporalModule.Destroy(meetupHandle);
+}
+
+void DemonstrateShadowRealmModule(spectre::es2025::ShadowRealmModule &shadowModule,
+                                  spectre::es2025::GlobalModule &globalModule) {
+    (void) globalModule;
+    std::cout << "\nShadowRealm isolation demo" << std::endl;
+    spectre::es2025::ShadowRealmModule::Handle hostRealm = 0;
+    spectre::es2025::ShadowRealmModule::Handle toolsRealm = 0;
+    if (shadowModule.Create("shadow.host", hostRealm) != spectre::StatusCode::Ok ||
+        shadowModule.Create("shadow.tools", toolsRealm) != spectre::StatusCode::Ok) {
+        std::cout << "  failed to create shadow realms" << std::endl;
+        return;
+    }
+
+    std::string value;
+    std::string diagnostics;
+    if (shadowModule.Evaluate(hostRealm,
+                              "return globalThis ? \"shadow-host\" : \"shadow\";",
+                              value,
+                              diagnostics,
+                              "shadow.host.init") == spectre::StatusCode::Ok) {
+        std::cout << "  host realm => " << value << std::endl;
+    }
+
+    shadowModule.ExportValue(hostRealm, "apiVersion", spectre::es2025::Value::String("v1"));
+    spectre::es2025::Value imported;
+    if (shadowModule.ImportValue(toolsRealm, hostRealm, "apiVersion", imported) == spectre::StatusCode::Ok) {
+        std::cout << "  tools realm imports apiVersion=" << imported.ToString() << std::endl;
+    }
+    shadowModule.Destroy(toolsRealm);
+    shadowModule.Destroy(hostRealm);
+}
+
 int main() {
+
     using namespace spectre;
 
     auto config = MakeDefaultConfig();
@@ -1724,6 +1814,20 @@ int main() {
         return 1;
     }
 
+    auto *temporalModulePtr = environment.FindModule("Temporal");
+    auto *temporalModule = dynamic_cast<es2025::TemporalModule *>(temporalModulePtr);
+    if (!temporalModule) {
+        std::cerr << "Temporal module unavailable" << std::endl;
+        return 1;
+    }
+
+    auto *shadowModulePtr = environment.FindModule("ShadowRealm");
+    auto *shadowModule = dynamic_cast<es2025::ShadowRealmModule *>(shadowModulePtr);
+    if (!shadowModule) {
+        std::cerr << "ShadowRealm module unavailable" << std::endl;
+        return 1;
+    }
+
     auto *dateModulePtr = environment.FindModule("Date");
     auto *dateModule = dynamic_cast<es2025::DateModule *>(dateModulePtr);
     if (!dateModule) {
@@ -1811,12 +1915,14 @@ int main() {
     DemonstrateStringModule(*stringModule);
     DemonstrateRegExpModule(*regexpModule);
     DemonstrateMathModule(*mathModule);
+    DemonstrateTemporalModule(*temporalModule);
     DemonstrateDateModule(*dateModule);
     DemonstrateNumberModule(*numberModule);
     DemonstrateBigIntModule(*bigintModule);
     DemonstrateObjectModule(*objectModule);
     DemonstrateReflectModule(*objectModule, *reflectModule);
     DemonstrateProxyModule(*objectModule, *proxyModule);
+    DemonstrateShadowRealmModule(*shadowModule, *globalModule);
     DemonstrateMapModule(*mapModule);
     DemonstrateSetModule(*setModule);
     DemonstrateWeakMapModule(*objectModule, *weakMapModule);
@@ -1862,6 +1968,7 @@ int main() {
     std::cout << "\nES2025 production scaffold ready" << std::endl;
     return 0;
 }
+
 
 
 

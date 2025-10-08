@@ -1,4 +1,4 @@
-#include <iostream>
+﻿#include <iostream>
 #include <limits>
 #include <string>
 #include <algorithm>
@@ -42,6 +42,8 @@
 #include "spectre/es2025/modules/symbol_module.h"
 #include "spectre/es2025/modules/reflect_module.h"
 #include "spectre/es2025/modules/weak_ref_module.h"
+#include "spectre/es2025/modules/shadow_realm_module.h"
+#include "spectre/es2025/modules/temporal_module.h"
 
 namespace {
     using spectre::RuntimeConfig;
@@ -2798,7 +2800,117 @@ bool ArrayBufferModuleResizesAndDetaches() {
         ok &= ExpectTrue(metrics.wellKnownSymbols == static_cast<std::uint64_t>(wellKnown.size()), "Metrics well-known symbols");
         return ok;
     }
+    bool ShadowRealmModuleCreatesIsolatedRealms() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        bool ok = ExpectTrue(runtime != nullptr, "Runtime created");
+        if (!runtime) {
+            return false;
+        }
+        auto &environment = runtime->EsEnvironment();
+        auto *shadowPtr = environment.FindModule("ShadowRealm");
+        auto *shadowModule = dynamic_cast<spectre::es2025::ShadowRealmModule *>(shadowPtr);
+        auto *globalModule = dynamic_cast<spectre::es2025::GlobalModule *>(environment.FindModule("Global"));
+        ok &= ExpectTrue(shadowModule != nullptr, "ShadowRealm module available");
+        ok &= ExpectTrue(globalModule != nullptr, "Global module available");
+        if (!shadowModule || !globalModule) {
+            return false;
+        }
+        spectre::es2025::ShadowRealmModule::Handle realmA = 0;
+        spectre::es2025::ShadowRealmModule::Handle realmB = 0;
+        ok &= ExpectStatus(shadowModule->Create("shadow.realm.A", realmA), StatusCode::Ok, "Create realmA");
+        ok &= ExpectStatus(shadowModule->Create("shadow.realm.B", realmB), StatusCode::Ok, "Create realmB");
+        std::string value;
+        std::string diagnostics;
+        ok &= ExpectStatus(shadowModule->Evaluate(realmA, "return \"realm-a\";", value, diagnostics, "realmA.eval"),
+                           StatusCode::Ok, "Eval realmA");
+        ok &= ExpectTrue(value == "realm-a", "RealmA value");
+        ok &= ExpectStatus(shadowModule->Evaluate(realmB, "return \"realm-b\";", value, diagnostics, "realmB.eval"),
+                           StatusCode::Ok, "Eval realmB");
+        ok &= ExpectTrue(value == "realm-b", "RealmB value");
+        ok &= ExpectStatus(shadowModule->ExportValue(realmA, "answer", spectre::es2025::Value::Number(42.0)),
+                           StatusCode::Ok, "Export value");
+        spectre::es2025::Value imported;
+        ok &= ExpectStatus(shadowModule->ImportValue(realmB, realmA, "answer", imported),
+                           StatusCode::Ok, "Import from realmA");
+        ok &= ExpectTrue(imported.IsNumber() && imported.AsNumber() == 42.0, "Imported content");
+        ok &= ExpectStatus(shadowModule->ClearExports(realmA), StatusCode::Ok, "Clear exports");
+        ok &= ExpectStatus(shadowModule->ImportValue(realmB, realmA, "answer", imported),
+                           StatusCode::NotFound, "Import missing export");
+        ok &= ExpectStatus(shadowModule->Destroy(realmA), StatusCode::Ok, "Destroy realmA");
+        ok &= ExpectStatus(shadowModule->Destroy(realmB), StatusCode::Ok, "Destroy realmB");
+        const auto &metrics = shadowModule->GetMetrics();
+        ok &= ExpectTrue(metrics.created >= 2, "Metrics created");
+        ok &= ExpectTrue(metrics.imports >= 1, "Metrics imports");
+        ok &= ExpectTrue(metrics.failedImports >= 1, "Metrics failed imports");
+        return ok;
+    }
+
+    bool TemporalModuleHandlesInstantsAndDurations() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        bool ok = ExpectTrue(runtime != nullptr, "Runtime created");
+        if (!runtime) {
+            return false;
+        }
+        auto &environment = runtime->EsEnvironment();
+        auto *temporalPtr = environment.FindModule("Temporal");
+        auto *temporalModule = dynamic_cast<spectre::es2025::TemporalModule *>(temporalPtr);
+        ok &= ExpectTrue(temporalModule != nullptr, "Temporal module available");
+        if (!temporalModule) {
+            return false;
+        }
+        auto zeroHandle = temporalModule->CanonicalEpoch();
+        ok &= ExpectTrue(temporalModule->Has(zeroHandle), "Canonical handle registered");
+        spectre::es2025::TemporalModule::Handle epochHandle = 0;
+        ok &= ExpectStatus(temporalModule->CreateInstant("epoch+1s", 1000000000, epochHandle), StatusCode::Ok,
+                           "Create instant from epoch");
+        spectre::es2025::TemporalModule::PlainDateTime epochComponents{};
+        ok &= ExpectStatus(temporalModule->ToPlainDateTime(epochHandle, 0, epochComponents), StatusCode::Ok,
+                           "ToPlainDateTime");
+        ok &= ExpectTrue(epochComponents.second == 1, "Epoch conversion");
+        spectre::es2025::TemporalModule::PlainDateTime local{};
+        local.year = 2024;
+        local.month = 7;
+        local.day = 21;
+        local.hour = 19;
+        local.minute = 5;
+        local.second = 30;
+        local.millisecond = 123;
+        local.microsecond = 456;
+        local.nanosecond = 789;
+        spectre::es2025::TemporalModule::Handle localHandle = 0;
+        ok &= ExpectStatus(temporalModule->CreateInstant(local, 120, "local.time", localHandle), StatusCode::Ok,
+                           "Create from PlainDateTime");
+        auto duration = spectre::es2025::TemporalModule::Duration::FromComponents(0, 1, 30, 0, 0, 0, 0);
+        spectre::es2025::TemporalModule::Handle shiftedHandle = 0;
+        ok &= ExpectStatus(temporalModule->AddDuration(localHandle, duration, "shifted", shiftedHandle),
+                           StatusCode::Ok, "Add duration new");
+        ok &= ExpectStatus(temporalModule->AddDurationInPlace(localHandle, duration),
+                           StatusCode::Ok, "Add duration in place");
+        spectre::es2025::TemporalModule::Duration diff{};
+        ok &= ExpectStatus(temporalModule->Difference(localHandle, shiftedHandle, diff), StatusCode::Ok,
+                           "Difference computation");
+        ok &= ExpectTrue(diff.TotalNanoseconds() == 0, "Difference zero");
+        auto breakdown = temporalModule->Breakdown(duration);
+        ok &= ExpectTrue(breakdown.hours == 1 && breakdown.minutes == 30, "Duration breakdown");
+        spectre::es2025::TemporalModule::Handle roundedHandle = 0;
+        ok &= ExpectStatus(temporalModule->Round(shiftedHandle, 10,
+                                                 spectre::es2025::TemporalModule::Unit::Minute,
+                                                 spectre::es2025::TemporalModule::RoundingMode::HalfExpand,
+                                                 "rounded", roundedHandle),
+                           StatusCode::Ok, "Round instant");
+        ok &= ExpectStatus(temporalModule->Destroy(roundedHandle), StatusCode::Ok, "Destroy rounded");
+        ok &= ExpectStatus(temporalModule->Destroy(shiftedHandle), StatusCode::Ok, "Destroy shifted");
+        ok &= ExpectStatus(temporalModule->Destroy(localHandle), StatusCode::Ok, "Destroy local");
+        ok &= ExpectStatus(temporalModule->Destroy(epochHandle), StatusCode::Ok, "Destroy epoch");
+        const auto &metrics = temporalModule->GetMetrics();
+        ok &= ExpectTrue(metrics.instantAllocations >= 4, "Metrics allocations");
+        ok &= ExpectTrue(metrics.arithmeticOps >= 2, "Metrics arithmetic");
+        ok &= ExpectTrue(metrics.roundingOps >= 1, "Metrics rounding");
+        return ok;
+    }
+
     struct TestCase {
+
         const char *name;
 
         bool (*fn)();
@@ -2860,6 +2972,8 @@ int main() {
         {"WeakRefModuleTracksLifetime", WeakRefModuleTracksLifetime},
         {"WeakMapModulePurgesInvalidKeys", WeakMapModulePurgesInvalidKeys},
         {"MathModuleAcceleratesWorkloads", MathModuleAcceleratesWorkloads},
+        {"ShadowRealmModuleCreatesIsolatedRealms", ShadowRealmModuleCreatesIsolatedRealms},
+        {"TemporalModuleHandlesInstantsAndDurations", TemporalModuleHandlesInstantsAndDurations},
         {"TickAndReconfigureUpdatesState", TickAndReconfigureUpdatesState}
     };
 
