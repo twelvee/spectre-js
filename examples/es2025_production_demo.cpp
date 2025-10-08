@@ -31,6 +31,8 @@
 #include "spectre/es2025/modules/bigint_module.h"
 #include "spectre/es2025/modules/date_module.h"
 #include "spectre/es2025/modules/map_module.h"
+#include "spectre/es2025/modules/set_module.h"
+#include "spectre/es2025/modules/weak_set_module.h"
 #include "spectre/es2025/modules/weak_map_module.h"
 #include "spectre/es2025/value.h"
 
@@ -724,6 +726,77 @@ void DemonstrateMapModule(spectre::es2025::MapModule &mapModule) {
     mapModule.Destroy(handle);
 }
 
+
+
+void DemonstrateSetModule(spectre::es2025::SetModule &setModule) {
+    std::cout << "\nDemonstrating Set module" << std::endl;
+    spectre::es2025::SetModule::Handle handle = 0;
+    if (setModule.Create("demo.set", handle) != spectre::StatusCode::Ok) {
+        std::cout << "  set unavailable" << std::endl;
+        return;
+    }
+    using Value = spectre::es2025::SetModule::Value;
+    setModule.Add(handle, Value::FromString("spectre-set"));
+    setModule.Add(handle, Value::FromInt(21));
+    setModule.Add(handle, Value::FromDouble(4.2));
+    setModule.Add(handle, Value::FromInt(21));
+    std::vector<Value> values;
+    if (setModule.Values(handle, values) == spectre::StatusCode::Ok) {
+        std::cout << "  values:";
+        for (const auto &value: values) {
+            if (value.IsString()) {
+                std::cout << " " << value.String();
+            } else if (value.IsInt()) {
+                std::cout << " " << value.Int();
+            } else if (value.IsDouble()) {
+                std::cout << " " << value.Double();
+            }
+        }
+        std::cout << std::endl;
+    }
+    bool removed = false;
+    setModule.Delete(handle, Value::FromDouble(4.2), removed);
+    std::cout << "  delete 4.2 => " << (removed ? "true" : "false") << std::endl;
+    std::cout << "  size => " << setModule.Size(handle) << std::endl;
+    setModule.Clear(handle);
+    setModule.Destroy(handle);
+}
+
+void DemonstrateWeakSetModule(spectre::es2025::ObjectModule &objectModule,
+                              spectre::es2025::WeakSetModule &weakSetModule) {
+    std::cout << "\nDemonstrating WeakSet module" << std::endl;
+    spectre::es2025::WeakSetModule::Handle handle = 0;
+    if (weakSetModule.Create("demo.weakset", handle) != spectre::StatusCode::Ok) {
+        std::cout << "  weak set unavailable" << std::endl;
+        return;
+    }
+    spectre::es2025::ObjectModule::Handle keyA = 0;
+    spectre::es2025::ObjectModule::Handle keyB = 0;
+    if (objectModule.Create("demo.weakset.keyA", 0, keyA) != spectre::StatusCode::Ok ||
+        objectModule.Create("demo.weakset.keyB", 0, keyB) != spectre::StatusCode::Ok) {
+        std::cout << "  object handles unavailable" << std::endl;
+        if (keyA != 0) {
+            objectModule.Destroy(keyA);
+        }
+        if (keyB != 0) {
+            objectModule.Destroy(keyB);
+        }
+        weakSetModule.Destroy(handle);
+        return;
+    }
+    weakSetModule.Add(handle, keyA);
+    weakSetModule.Add(handle, keyB);
+    std::cout << "  size => " << weakSetModule.Size(handle) << std::endl;
+    objectModule.Destroy(keyA);
+    weakSetModule.Compact(handle);
+    std::cout << "  size after compact => " << weakSetModule.Size(handle) << std::endl;
+    bool removed = false;
+    weakSetModule.Delete(handle, keyB, removed);
+    std::cout << "  delete keyB => " << (removed ? "true" : "false") << std::endl;
+    weakSetModule.Destroy(handle);
+    objectModule.Destroy(keyB);
+}
+
 void DemonstrateWeakMapModule(spectre::es2025::ObjectModule &objectModule,
                               spectre::es2025::WeakMapModule &weakMapModule) {
     std::cout << "\nDemonstrating WeakMap module" << std::endl;
@@ -984,10 +1057,24 @@ int main() {
         return 1;
     }
 
+    auto *setModulePtr = environment.FindModule("Set");
+    auto *setModule = dynamic_cast<es2025::SetModule *>(setModulePtr);
+    if (!setModule) {
+        std::cerr << "Set module unavailable" << std::endl;
+        return 1;
+    }
+
     auto *weakMapModulePtr = environment.FindModule("WeakMap");
     auto *weakMapModule = dynamic_cast<es2025::WeakMapModule *>(weakMapModulePtr);
     if (!weakMapModule) {
         std::cerr << "WeakMap module unavailable" << std::endl;
+        return 1;
+    }
+
+    auto *weakSetModulePtr = environment.FindModule("WeakSet");
+    auto *weakSetModule = dynamic_cast<es2025::WeakSetModule *>(weakSetModulePtr);
+    if (!weakSetModule) {
+        std::cerr << "WeakSet module unavailable" << std::endl;
         return 1;
     }
 
@@ -1121,7 +1208,9 @@ int main() {
     DemonstrateObjectModule(*objectModule);
     DemonstrateProxyModule(*objectModule, *proxyModule);
     DemonstrateMapModule(*mapModule);
+    DemonstrateSetModule(*setModule);
     DemonstrateWeakMapModule(*objectModule, *weakMapModule);
+    DemonstrateWeakSetModule(*objectModule, *weakSetModule);
 
     std::cout << "\nDemonstrating error capture" << std::endl;
     std::string failingValue;

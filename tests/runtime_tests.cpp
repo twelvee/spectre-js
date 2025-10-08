@@ -18,6 +18,8 @@
 #include "spectre/es2025/modules/object_module.h"
 #include "spectre/es2025/modules/proxy_module.h"
 #include "spectre/es2025/modules/map_module.h"
+#include "spectre/es2025/modules/set_module.h"
+#include "spectre/es2025/modules/weak_set_module.h"
 #include "spectre/es2025/modules/weak_map_module.h"
 #include "spectre/es2025/modules/error_module.h"
 #include "spectre/es2025/modules/function_module.h"
@@ -1802,6 +1804,94 @@ bool ArrayBufferModuleResizesAndDetaches() {
         return ok;
     }
 
+
+    bool SetModuleMaintainsUniqueness() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        bool ok = ExpectTrue(runtime != nullptr, "Runtime created");
+        if (!runtime) {
+            return false;
+        }
+        auto &environment = runtime->EsEnvironment();
+        auto *setPtr = environment.FindModule("Set");
+        auto *setModule = dynamic_cast<spectre::es2025::SetModule *>(setPtr);
+        ok &= ExpectTrue(setModule != nullptr, "Set module available");
+        if (!setModule) {
+            return false;
+        }
+        spectre::es2025::SetModule::Handle handle = 0;
+        ok &= ExpectStatus(setModule->Create("test.set", handle), StatusCode::Ok, "Create set");
+        using SetValue = spectre::es2025::SetModule::Value;
+        ok &= ExpectStatus(setModule->Add(handle, SetValue::FromInt(42)), StatusCode::Ok, "Add int");
+        ok &= ExpectStatus(setModule->Add(handle, SetValue::FromInt(42)), StatusCode::Ok, "Add duplicate");
+        ok &= ExpectTrue(setModule->Size(handle) == 1, "Duplicate ignored");
+        ok &= ExpectStatus(setModule->Add(handle, SetValue::FromString("alpha")), StatusCode::Ok, "Add string");
+        ok &= ExpectStatus(setModule->Add(handle, SetValue::FromDouble(3.5)), StatusCode::Ok, "Add double");
+        ok &= ExpectTrue(setModule->Size(handle) == 3, "Set size after additions");
+        ok &= ExpectTrue(setModule->Has(handle, SetValue::FromString("alpha")), "Set contains string");
+        ok &= ExpectTrue(!setModule->Has(handle, SetValue::FromBoolean(true)), "Missing value lookup");
+        bool removed = false;
+        ok &= ExpectStatus(setModule->Delete(handle, SetValue::FromInt(42), removed), StatusCode::Ok, "Delete value");
+        ok &= ExpectTrue(removed, "Delete reported true");
+        ok &= ExpectTrue(setModule->Size(handle) == 2, "Size after delete");
+        std::vector<SetValue> values;
+        ok &= ExpectStatus(setModule->Values(handle, values), StatusCode::Ok, "Collect values");
+        ok &= ExpectTrue(values.size() == 2, "Values count");
+        std::vector<std::pair<SetValue, SetValue> > entries;
+        ok &= ExpectStatus(setModule->Entries(handle, entries), StatusCode::Ok, "Collect entries");
+        ok &= ExpectTrue(entries.size() == 2, "Entries count");
+        if (!entries.empty()) {
+            ok &= ExpectTrue(entries.front().first.Equals(entries.front().second), "Entries mirror values");
+        }
+        ok &= ExpectStatus(setModule->Clear(handle), StatusCode::Ok, "Clear set");
+        ok &= ExpectTrue(setModule->Size(handle) == 0, "Cleared size");
+        ok &= ExpectStatus(setModule->Destroy(handle), StatusCode::Ok, "Destroy set");
+        const auto &metrics = setModule->GetMetrics();
+        ok &= ExpectTrue(metrics.addOps >= 3, "Add ops metric");
+        ok &= ExpectTrue(metrics.iterations >= 2, "Iteration metric");
+        return ok;
+    }
+
+    bool WeakSetModuleCompactsInvalidEntries() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        bool ok = ExpectTrue(runtime != nullptr, "Runtime created");
+        if (!runtime) {
+            return false;
+        }
+        auto &environment = runtime->EsEnvironment();
+        auto *objectPtr = environment.FindModule("Object");
+        auto *objectModule = dynamic_cast<spectre::es2025::ObjectModule *>(objectPtr);
+        auto *weakPtr = environment.FindModule("WeakSet");
+        auto *weakSetModule = dynamic_cast<spectre::es2025::WeakSetModule *>(weakPtr);
+        ok &= ExpectTrue(objectModule != nullptr, "Object module available");
+        ok &= ExpectTrue(weakSetModule != nullptr, "WeakSet module available");
+        if (!objectModule || !weakSetModule) {
+            return false;
+        }
+        spectre::es2025::WeakSetModule::Handle handle = 0;
+        ok &= ExpectStatus(weakSetModule->Create("test.weakset", handle), StatusCode::Ok, "Create weak set");
+        spectre::es2025::ObjectModule::Handle keyA = 0;
+        spectre::es2025::ObjectModule::Handle keyB = 0;
+        ok &= ExpectStatus(objectModule->Create("test.weakset.keyA", 0, keyA), StatusCode::Ok, "Create keyA");
+        ok &= ExpectStatus(objectModule->Create("test.weakset.keyB", 0, keyB), StatusCode::Ok, "Create keyB");
+        ok &= ExpectStatus(weakSetModule->Add(handle, keyA), StatusCode::Ok, "Add keyA");
+        ok &= ExpectStatus(weakSetModule->Add(handle, keyB), StatusCode::Ok, "Add keyB");
+        ok &= ExpectTrue(weakSetModule->Has(handle, keyA), "Weak set contains keyA");
+        ok &= ExpectTrue(weakSetModule->Size(handle) == 2, "Weak set size");
+        ok &= ExpectStatus(objectModule->Destroy(keyA), StatusCode::Ok, "Destroy keyA");
+        ok &= ExpectStatus(weakSetModule->Compact(handle), StatusCode::Ok, "Compact weak set");
+        ok &= ExpectTrue(weakSetModule->Size(handle) == 1, "Size after compact");
+        bool removed = false;
+        ok &= ExpectStatus(weakSetModule->Delete(handle, keyB, removed), StatusCode::Ok, "Delete keyB");
+        ok &= ExpectTrue(removed, "Delete reported true");
+        ok &= ExpectTrue(weakSetModule->Size(handle) == 0, "Empty after delete");
+        ok &= ExpectStatus(weakSetModule->Destroy(handle), StatusCode::Ok, "Destroy weak set");
+        ok &= ExpectStatus(objectModule->Destroy(keyB), StatusCode::Ok, "Destroy keyB");
+        const auto &metrics = weakSetModule->GetMetrics();
+        ok &= ExpectTrue(metrics.compactions >= 1, "Compaction metric");
+        ok &= ExpectTrue(metrics.hits >= 1, "Hit metric");
+        return ok;
+    }
+
     bool WeakMapModulePurgesInvalidKeys() {
         auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
         bool ok = ExpectTrue(runtime != nullptr, "Runtime created");
@@ -1964,6 +2054,8 @@ int main() {
         {"ProxyModuleCoordinatesTraps", ProxyModuleCoordinatesTraps},
         {"SymbolModuleManagesSymbols", SymbolModuleManagesSymbols},
         {"MapModuleMaintainsOrder", MapModuleMaintainsOrder},
+        {"SetModuleMaintainsUniqueness", SetModuleMaintainsUniqueness},
+        {"WeakSetModuleCompactsInvalidEntries", WeakSetModuleCompactsInvalidEntries},
         {"WeakMapModulePurgesInvalidKeys", WeakMapModulePurgesInvalidKeys},
         {"MathModuleAcceleratesWorkloads", MathModuleAcceleratesWorkloads},
         {"TickAndReconfigureUpdatesState", TickAndReconfigureUpdatesState}
