@@ -4,6 +4,7 @@
 #include <sstream>
 #include <limits>
 #include <string>
+#include <string_view>
 #include <vector>
 #include <algorithm>
 #include <cctype>
@@ -19,6 +20,7 @@
 #include "spectre/es2025/modules/proxy_module.h"
 #include "spectre/es2025/modules/error_module.h"
 #include "spectre/es2025/modules/function_module.h"
+#include "spectre/es2025/modules/async_function_module.h"
 #include "spectre/es2025/modules/atomics_module.h"
 #include "spectre/es2025/modules/boolean_module.h"
 #include "spectre/es2025/modules/array_module.h"
@@ -63,6 +65,34 @@ namespace {
         std::transform(outResult.begin(), outResult.end(), outResult.begin(), [](unsigned char c) {
             return static_cast<char>(std::toupper(c));
         });
+        return spectre::StatusCode::Ok;
+    }
+
+    struct DemoAsyncPayload {
+        bool *flag;
+        int base;
+        int delta;
+    };
+
+    spectre::StatusCode DemoAsyncValueCallback(void *userData,
+                                               spectre::es2025::Value &outValue,
+                                               std::string &outDiagnostics) {
+        auto *payload = static_cast<DemoAsyncPayload *>(userData);
+        if (payload != nullptr && payload->flag != nullptr) {
+            *payload->flag = true;
+        }
+        const int value = payload != nullptr ? (payload->base + payload->delta) : 0;
+        outValue = spectre::es2025::Value::Number(static_cast<double>(value));
+        outDiagnostics = "ok";
+        return spectre::StatusCode::Ok;
+    }
+
+    spectre::StatusCode DemoAsyncMessageCallback(void *userData,
+                                                 spectre::es2025::Value &outValue,
+                                                 std::string &outDiagnostics) {
+        auto *message = static_cast<const char *>(userData);
+        outValue = spectre::es2025::Value::String(message != nullptr ? std::string_view(message) : "async-demo");
+        outDiagnostics = "resolved";
         return spectre::StatusCode::Ok;
     }
 
@@ -131,6 +161,78 @@ namespace {
             spectre::TickInfo tick{0.016, frame};
             runtime.Tick(tick);
         }
+    }
+
+    void DemonstrateAsyncFunctionModule(spectre::es2025::AsyncFunctionModule &asyncModule,
+                                        spectre::SpectreRuntime &runtime) {
+        std::cout << "\nAsyncFunction job queue" << std::endl;
+        if (asyncModule.Configure(16, 8) != spectre::StatusCode::Ok) {
+            std::cout << "  async queue unavailable" << std::endl;
+            return;
+        }
+
+        bool fastResolved = false;
+        bool delayedResolved = false;
+        DemoAsyncPayload fastPayload{&fastResolved, 48, 12};
+        DemoAsyncPayload delayedPayload{&delayedResolved, 128, -28};
+        const char *messagePayload = "demo.message";
+
+        spectre::es2025::AsyncFunctionModule::DispatchOptions fastOptions;
+        fastOptions.label = "demo.fast";
+        spectre::es2025::AsyncFunctionModule::DispatchOptions delayedOptions;
+        delayedOptions.delayFrames = 2;
+        delayedOptions.delaySeconds = 0.030;
+        delayedOptions.label = "demo.delayed";
+        spectre::es2025::AsyncFunctionModule::DispatchOptions messageOptions;
+        messageOptions.delayFrames = 1;
+        messageOptions.label = "demo.message";
+
+        spectre::es2025::AsyncFunctionModule::Handle fastHandle = 0;
+        spectre::es2025::AsyncFunctionModule::Handle delayedHandle = 0;
+        spectre::es2025::AsyncFunctionModule::Handle messageHandle = 0;
+
+        if (asyncModule.Enqueue(DemoAsyncValueCallback, &fastPayload, fastOptions, fastHandle) != spectre::StatusCode::Ok ||
+            asyncModule.Enqueue(DemoAsyncValueCallback, &delayedPayload, delayedOptions, delayedHandle) != spectre::StatusCode::Ok ||
+            asyncModule.Enqueue(DemoAsyncMessageCallback, const_cast<char *>(messagePayload), messageOptions,
+                                messageHandle) != spectre::StatusCode::Ok) {
+            std::cout << "  failed to enqueue demo jobs" << std::endl;
+            return;
+        }
+
+        std::cout << "  handles => " << fastHandle << ", " << delayedHandle << ", " << messageHandle << std::endl;
+        std::cout << "  pending jobs: " << asyncModule.PendingCount() << std::endl;
+
+        std::vector<spectre::es2025::AsyncFunctionModule::Result> results;
+        auto processTick = [&](double delta, std::uint64_t frame) {
+            runtime.Tick({delta, frame});
+            asyncModule.DrainCompleted(results);
+            for (const auto &entry: results) {
+                std::ostringstream timing;
+                timing << std::fixed << std::setprecision(2) << entry.executionMicros;
+                std::cout << "    [frame " << entry.completedFrame << "] " << entry.label.data()
+                        << " status=" << static_cast<int>(entry.status)
+                        << " value=" << entry.value.ToString()
+                        << " diag=" << entry.diagnostics
+                        << " time=" << timing.str() << "us" << std::endl;
+            }
+            results.clear();
+        };
+
+        processTick(0.016, 0);
+        processTick(0.016, 1);
+        processTick(0.016, 2);
+
+        const auto &metrics = asyncModule.GetMetrics();
+        std::ostringstream average;
+        average << std::fixed << std::setprecision(2) << metrics.AverageExecutionMicros();
+        std::cout << "  metrics enqueued=" << metrics.enqueued
+                << " executed=" << metrics.executed
+                << " cancelled=" << metrics.cancelled
+                << " failed=" << metrics.failed
+                << " avg=" << average.str() << "us" << std::endl;
+        std::cout << "  pending after ticks: " << asyncModule.PendingCount() << std::endl;
+        std::cout << "  fast resolved=" << (fastResolved ? "yes" : "no")
+                << " delayed resolved=" << (delayedResolved ? "yes" : "no") << std::endl;
     }
 
     void DemonstrateArrayModule(spectre::es2025::ArrayModule &arrayModule) {
@@ -1186,6 +1288,13 @@ int main() {
         return 1;
     }
 
+    auto *asyncFunctionModulePtr = environment.FindModule("AsyncFunction");
+    auto *asyncFunctionModule = dynamic_cast<es2025::AsyncFunctionModule *>(asyncFunctionModulePtr);
+    if (!asyncFunctionModule) {
+        std::cerr << "AsyncFunction module unavailable" << std::endl;
+        return 1;
+    }
+
     auto *iteratorModulePtr = environment.FindModule("Iterator");
     auto *iteratorModule = dynamic_cast<es2025::IteratorModule *>(iteratorModulePtr);
     if (!iteratorModule) {
@@ -1303,6 +1412,7 @@ int main() {
     ShowcaseSymbols(*symbolModule);
     DemonstrateIteratorModule(*iteratorModule);
     DemonstrateGeneratorModule(*generatorModule, *iteratorModule);
+    DemonstrateAsyncFunctionModule(*asyncFunctionModule, *runtime);
     DemonstrateArrayModule(*arrayModule);
     DemonstrateArrayBufferModule(*arrayBufferModule);
     DemonstrateTypedArrayModule(*typedArrayModule);

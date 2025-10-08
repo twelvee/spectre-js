@@ -23,6 +23,7 @@
 #include "spectre/es2025/modules/weak_map_module.h"
 #include "spectre/es2025/modules/error_module.h"
 #include "spectre/es2025/modules/function_module.h"
+#include "spectre/es2025/modules/async_function_module.h"
 #include "spectre/es2025/modules/atomics_module.h"
 #include "spectre/es2025/modules/boolean_module.h"
 #include "spectre/es2025/modules/array_module.h"
@@ -89,6 +90,32 @@ namespace {
         }
         outResult = args.front();
         return StatusCode::Ok;
+    }
+
+    struct AsyncNumberPayload {
+        bool *flag;
+        int value;
+    };
+
+    StatusCode AsyncNumberCallback(void *userData,
+                                   spectre::es2025::Value &outValue,
+                                   std::string &outDiagnostics) {
+        auto *payload = static_cast<AsyncNumberPayload *>(userData);
+        if (payload != nullptr && payload->flag != nullptr) {
+            *payload->flag = true;
+        }
+        const int number = payload != nullptr ? payload->value : 0;
+        outValue = spectre::es2025::Value::Number(static_cast<double>(number));
+        outDiagnostics = "ok";
+        return StatusCode::Ok;
+    }
+
+    StatusCode AsyncFailCallback(void *,
+                                 spectre::es2025::Value &outValue,
+                                 std::string &outDiagnostics) {
+        outValue = spectre::es2025::Value::Undefined();
+        outDiagnostics = "async failure";
+        return StatusCode::InvalidArgument;
     }
 
     bool DefaultConfigPopulatesDefaults() {
@@ -704,6 +731,189 @@ namespace {
                                          nullptr);
         ok &= ExpectStatus(status, StatusCode::Ok, "Raise custom error");
         ok &= ExpectTrue(formatted.find("ScriptError") != std::string::npos, "Formatted custom type");
+        return ok;
+    }
+
+    bool AsyncFunctionModuleDispatchesJobs() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        bool ok = ExpectTrue(runtime != nullptr, "Runtime created");
+        if (!runtime) {
+            return false;
+        }
+        auto &environment = runtime->EsEnvironment();
+        auto *module = dynamic_cast<spectre::es2025::AsyncFunctionModule *>(environment.FindModule("AsyncFunction"));
+        ok &= ExpectTrue(module != nullptr, "AsyncFunction module available");
+        if (!module) {
+            return false;
+        }
+        ok &= ExpectStatus(module->Configure(8, 4), StatusCode::Ok, "Configure async module");
+
+        bool fastInvoked = false;
+        AsyncNumberPayload fastPayload{&fastInvoked, 7};
+        spectre::es2025::AsyncFunctionModule::DispatchOptions fastOptions;
+        fastOptions.label = "fast";
+        spectre::es2025::AsyncFunctionModule::Handle fastHandle = 0;
+        auto status = module->Enqueue(AsyncNumberCallback, &fastPayload, fastOptions, fastHandle);
+        ok &= ExpectStatus(status, StatusCode::Ok, "Enqueue fast job");
+        ok &= ExpectTrue(fastHandle != spectre::es2025::AsyncFunctionModule::kInvalidHandle,
+                         "Fast handle valid");
+
+        bool delayedInvoked = false;
+        AsyncNumberPayload delayedPayload{&delayedInvoked, 42};
+        spectre::es2025::AsyncFunctionModule::DispatchOptions delayedOptions;
+        delayedOptions.delayFrames = 2;
+        delayedOptions.label = "delayed";
+        spectre::es2025::AsyncFunctionModule::Handle delayedHandle = 0;
+        status = module->Enqueue(AsyncNumberCallback, &delayedPayload, delayedOptions, delayedHandle);
+        ok &= ExpectStatus(status, StatusCode::Ok, "Enqueue delayed job");
+        ok &= ExpectTrue(module->PendingCount() == 2, "Pending count after enqueue");
+
+        std::vector<spectre::es2025::AsyncFunctionModule::Result> results;
+        runtime->Tick({0.016, 0});
+        module->DrainCompleted(results);
+        ok &= ExpectTrue(results.size() == 1, "Fast path completes on first tick");
+        if (!results.empty()) {
+            ok &= ExpectTrue(results.front().handle == fastHandle, "Fast handle matches");
+            ok &= ExpectTrue(results.front().status == StatusCode::Ok, "Fast status ok");
+            ok &= ExpectTrue(results.front().value.AsNumber(-1.0) == 7.0, "Fast value matches");
+            ok &= ExpectTrue(results.front().diagnostics == "ok", "Fast diagnostics propagated");
+            ok &= ExpectTrue(std::string(results.front().label.data()) == "fast", "Fast label preserved");
+        }
+        results.clear();
+        ok &= ExpectTrue(fastInvoked, "Fast callback invoked");
+        ok &= ExpectTrue(!delayedInvoked, "Delayed callback pending");
+        ok &= ExpectTrue(module->PendingCount() == 1, "Pending count after first tick");
+
+        runtime->Tick({0.016, 1});
+        module->DrainCompleted(results);
+        ok &= ExpectTrue(results.empty(), "Delayed job still pending");
+        ok &= ExpectTrue(module->PendingCount() == 1, "Pending count unchanged");
+
+        runtime->Tick({0.016, 2});
+        module->DrainCompleted(results);
+        ok &= ExpectTrue(results.size() == 1, "Delayed job completes on schedule");
+        if (!results.empty()) {
+            ok &= ExpectTrue(results.front().handle == delayedHandle, "Delayed handle matches");
+            ok &= ExpectTrue(results.front().status == StatusCode::Ok, "Delayed status ok");
+            ok &= ExpectTrue(results.front().value.AsNumber(-1.0) == 42.0, "Delayed value matches");
+            ok &= ExpectTrue(std::string(results.front().label.data()) == "delayed", "Delayed label preserved");
+        }
+        results.clear();
+        ok &= ExpectTrue(delayedInvoked, "Delayed callback invoked");
+
+        const auto &metrics = module->GetMetrics();
+        ok &= ExpectTrue(metrics.enqueued == 2, "Metrics enqueued count");
+        ok &= ExpectTrue(metrics.executed == 2, "Metrics executed count");
+        ok &= ExpectTrue(metrics.failed == 0, "Metrics failure count");
+        ok &= ExpectTrue(metrics.fastPath == 1, "Metrics fast path count");
+        ok &= ExpectTrue(module->PendingCount() == 0, "Queue drained");
+        return ok;
+    }
+
+    bool AsyncFunctionModuleHandlesDelaysAndCancellation() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        bool ok = ExpectTrue(runtime != nullptr, "Runtime created");
+        if (!runtime) {
+            return false;
+        }
+        auto &environment = runtime->EsEnvironment();
+        auto *module = dynamic_cast<spectre::es2025::AsyncFunctionModule *>(environment.FindModule("AsyncFunction"));
+        ok &= ExpectTrue(module != nullptr, "AsyncFunction module available");
+        if (!module) {
+            return false;
+        }
+        ok &= ExpectStatus(module->Configure(6, 6), StatusCode::Ok, "Configure async module");
+
+        bool secondsInvoked = false;
+        AsyncNumberPayload secondsPayload{&secondsInvoked, 11};
+        spectre::es2025::AsyncFunctionModule::DispatchOptions secondsOptions;
+        secondsOptions.delaySeconds = 0.05;
+        secondsOptions.label = "seconds";
+        spectre::es2025::AsyncFunctionModule::Handle secondsHandle = 0;
+        auto status = module->Enqueue(AsyncNumberCallback, &secondsPayload, secondsOptions, secondsHandle);
+        ok &= ExpectStatus(status, StatusCode::Ok, "Enqueue seconds-delayed job");
+
+        spectre::es2025::AsyncFunctionModule::DispatchOptions failOptions;
+        failOptions.label = "fail";
+        spectre::es2025::AsyncFunctionModule::Handle failHandle = 0;
+        status = module->Enqueue(AsyncFailCallback, nullptr, failOptions, failHandle);
+        ok &= ExpectStatus(status, StatusCode::Ok, "Enqueue failing job");
+
+        spectre::es2025::AsyncFunctionModule::DispatchOptions cancelOptions;
+        cancelOptions.delayFrames = 5;
+        cancelOptions.label = "cancel";
+        spectre::es2025::AsyncFunctionModule::Handle cancelHandle = 0;
+        status = module->Enqueue(AsyncNumberCallback, nullptr, cancelOptions, cancelHandle);
+        ok &= ExpectStatus(status, StatusCode::Ok, "Enqueue cancellable job");
+        ok &= ExpectTrue(module->Cancel(cancelHandle), "Cancel succeeds");
+        ok &= ExpectTrue(module->PendingCount() == 2, "Pending count after cancel");
+
+        std::vector<spectre::es2025::AsyncFunctionModule::Result> results;
+        module->DrainCompleted(results);
+        ok &= ExpectTrue(results.empty(), "No completions before tick");
+
+        runtime->Tick({0.010, 0});
+        module->DrainCompleted(results);
+        ok &= ExpectTrue(results.size() == 1, "Failing job runs first");
+        if (!results.empty()) {
+            ok &= ExpectTrue(results.front().handle == failHandle, "Fail handle matches");
+            ok &= ExpectTrue(results.front().status == StatusCode::InvalidArgument, "Fail status propagated");
+            ok &= ExpectTrue(results.front().diagnostics == "async failure", "Fail diagnostics propagated");
+            ok &= ExpectTrue(std::string(results.front().label.data()) == "fail", "Fail label preserved");
+        }
+        results.clear();
+        ok &= ExpectTrue(!secondsInvoked, "Seconds job not yet executed");
+
+        runtime->Tick({0.020, 1});
+        module->DrainCompleted(results);
+        ok &= ExpectTrue(results.empty(), "Seconds job still waiting");
+
+        runtime->Tick({0.030, 2});
+        module->DrainCompleted(results);
+        ok &= ExpectTrue(results.size() == 1, "Seconds job completes after delay");
+        if (!results.empty()) {
+            ok &= ExpectTrue(results.front().handle == secondsHandle, "Seconds handle matches");
+            ok &= ExpectTrue(results.front().status == StatusCode::Ok, "Seconds status ok");
+            ok &= ExpectTrue(results.front().value.AsNumber(-1.0) == 11.0, "Seconds value matches");
+            ok &= ExpectTrue(std::string(results.front().label.data()) == "seconds", "Seconds label preserved");
+        }
+        results.clear();
+        ok &= ExpectTrue(secondsInvoked, "Seconds callback invoked");
+        ok &= ExpectTrue(module->PendingCount() == 0, "Pending queue empty");
+
+        const auto &metrics = module->GetMetrics();
+        ok &= ExpectTrue(metrics.enqueued == 3, "Metrics enqueued total");
+        ok &= ExpectTrue(metrics.executed == 2, "Metrics executed after cancel");
+        ok &= ExpectTrue(metrics.cancelled == 1, "Metrics cancellation count");
+        ok &= ExpectTrue(metrics.failed == 1, "Metrics failure count");
+        ok &= ExpectTrue(metrics.overflow == 0, "Metrics overflow baseline");
+
+        ok &= ExpectStatus(module->Configure(1, 1), StatusCode::Ok, "Reconfigure for overflow test");
+        bool singleInvoked = false;
+        AsyncNumberPayload singlePayload{&singleInvoked, 5};
+        spectre::es2025::AsyncFunctionModule::DispatchOptions singleOptions;
+        singleOptions.label = "single";
+        spectre::es2025::AsyncFunctionModule::Handle singleHandle = 0;
+        status = module->Enqueue(AsyncNumberCallback, &singlePayload, singleOptions, singleHandle);
+        ok &= ExpectStatus(status, StatusCode::Ok, "Enqueue single job after reconfigure");
+        ok &= ExpectTrue(module->PendingCount() == 1, "Pending count after single enqueue");
+
+        spectre::es2025::AsyncFunctionModule::Handle overflowHandle = 0;
+        status = module->Enqueue(AsyncNumberCallback, &singlePayload, singleOptions, overflowHandle);
+        ok &= ExpectStatus(status, StatusCode::CapacityExceeded, "Overflow enqueue rejected");
+        const auto &overflowMetrics = module->GetMetrics();
+        ok &= ExpectTrue(overflowMetrics.overflow == 1, "Overflow metric increments");
+
+        runtime->Tick({0.016, 3});
+        module->DrainCompleted(results);
+        ok &= ExpectTrue(results.size() == 1, "Single job executes after overflow");
+        if (!results.empty()) {
+            ok &= ExpectTrue(results.front().handle == singleHandle, "Single handle matches");
+        }
+        results.clear();
+        ok &= ExpectTrue(singleInvoked, "Single callback invoked");
+        ok &= ExpectTrue(module->PendingCount() == 0, "Pending queue drained after overflow test");
+
         return ok;
     }
 
@@ -2152,6 +2362,8 @@ int main() {
         {"ErrorModuleRaisesAndTracksHistory", ErrorModuleRaisesAndTracksHistory},
         {"ErrorModuleDrainsHistory", ErrorModuleDrainsHistory},
         {"ErrorModuleSupportsCustomTypes", ErrorModuleSupportsCustomTypes},
+        {"AsyncFunctionModuleDispatchesJobs", AsyncFunctionModuleDispatchesJobs},
+        {"AsyncFunctionModuleHandlesDelaysAndCancellation", AsyncFunctionModuleHandlesDelaysAndCancellation},
         {"FunctionModuleRegistersAndInvokes", FunctionModuleRegistersAndInvokes},
         {"FunctionModuleHandlesDuplicatesAndRemoval", FunctionModuleHandlesDuplicatesAndRemoval},
         {"FunctionModuleGpuToggle", FunctionModuleGpuToggle},
