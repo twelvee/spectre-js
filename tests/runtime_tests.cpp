@@ -40,6 +40,8 @@
 #include "spectre/es2025/modules/regexp_module.h"
 #include "spectre/es2025/modules/typed_array_module.h"
 #include "spectre/es2025/modules/symbol_module.h"
+#include "spectre/es2025/modules/reflect_module.h"
+#include "spectre/es2025/modules/weak_ref_module.h"
 
 namespace {
     using spectre::RuntimeConfig;
@@ -2572,6 +2574,116 @@ bool ArrayBufferModuleResizesAndDetaches() {
         return ok;
     }
 
+    bool ReflectModuleProvidesMetaOperations() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        bool ok = ExpectTrue(runtime != nullptr, "Runtime created");
+        if (!runtime) {
+            return false;
+        }
+        auto &environment = runtime->EsEnvironment();
+        auto *objectPtr = environment.FindModule("Object");
+        auto *reflectPtr = environment.FindModule("Reflect");
+        auto *objectModule = dynamic_cast<spectre::es2025::ObjectModule *>(objectPtr);
+        auto *reflectModule = dynamic_cast<spectre::es2025::ReflectModule *>(reflectPtr);
+        ok &= ExpectTrue(objectModule != nullptr, "Object module available");
+        ok &= ExpectTrue(reflectModule != nullptr, "Reflect module available");
+        if (!objectModule || !reflectModule) {
+            return false;
+        }
+        spectre::es2025::ObjectModule::Handle target = 0;
+        ok &= ExpectStatus(objectModule->Create("test.reflect.target", 0, target), StatusCode::Ok, "Create target");
+        spectre::es2025::ObjectModule::PropertyDescriptor descriptor{};
+        descriptor.value = spectre::es2025::ObjectModule::Value::FromInt(42);
+        descriptor.enumerable = true;
+        descriptor.configurable = false;
+        descriptor.writable = false;
+        ok &= ExpectStatus(reflectModule->DefineProperty(target, "answer", descriptor), StatusCode::Ok, "Define property");
+        spectre::es2025::ObjectModule::Value value;
+        ok &= ExpectStatus(reflectModule->Get(target, "answer", value), StatusCode::Ok, "Get property");
+        ok &= ExpectTrue(value.IsInt() && value.Int() == 42, "Reflect.get returns expected value");
+        ok &= ExpectTrue(reflectModule->Has(target, "answer"), "Reflect.has returns true");
+        spectre::es2025::ObjectModule::PropertyDescriptor readBack{};
+        ok &= ExpectStatus(reflectModule->GetOwnPropertyDescriptor(target, "answer", readBack), StatusCode::Ok, "Descriptor fetch");
+        ok &= ExpectTrue(readBack.enumerable && !readBack.configurable && !readBack.writable, "Descriptor flags preserved");
+        std::vector<std::string> keys;
+        ok &= ExpectStatus(reflectModule->OwnKeys(target, keys), StatusCode::Ok, "Own keys");
+        ok &= ExpectTrue(keys.size() == 1 && keys.front() == "answer", "Own keys contains property");
+        auto prototype = reflectModule->GetPrototypeOf(target);
+        ok &= ExpectTrue(prototype == 0, "Prototype initially null");
+        spectre::es2025::ObjectModule::Handle protoHandle = 0;
+        ok &= ExpectStatus(objectModule->Create("test.reflect.proto", 0, protoHandle), StatusCode::Ok, "Create prototype");
+        ok &= ExpectStatus(reflectModule->SetPrototypeOf(target, protoHandle), StatusCode::Ok, "Set prototype");
+        ok &= ExpectTrue(reflectModule->GetPrototypeOf(target) == protoHandle, "Prototype updated");
+        bool deleted = true;
+        ok &= ExpectStatus(reflectModule->DeleteProperty(target, "answer", deleted), StatusCode::InvalidArgument,
+                           "Delete property rejects non-configurable");
+        ok &= ExpectTrue(!deleted, "Non-configurable property not removed");
+        ok &= ExpectTrue(reflectModule->IsExtensible(target), "Still extensible before preventExtensions");
+        ok &= ExpectStatus(reflectModule->PreventExtensions(target), StatusCode::Ok, "Prevent extensions");
+        ok &= ExpectTrue(!reflectModule->IsExtensible(target), "Not extensible after preventExtensions");
+        spectre::es2025::ObjectModule::PropertyDescriptor descriptor2{};
+        descriptor2.value = spectre::es2025::ObjectModule::Value::FromInt(7);
+        descriptor2.enumerable = true;
+        descriptor2.configurable = true;
+        descriptor2.writable = true;
+        ok &= ExpectStatus(reflectModule->DefineProperty(target, "newProp", descriptor2), StatusCode::InvalidArgument, "Cannot add property to non-extensible object");
+        const auto &metrics = reflectModule->GetMetrics();
+        ok &= ExpectTrue(metrics.getOps >= 1 && metrics.defineOps >= 1, "Reflect metrics updated");
+        return ok;
+    }
+
+    bool WeakRefModuleTracksLifetime() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        bool ok = ExpectTrue(runtime != nullptr, "Runtime created");
+        if (!runtime) {
+            return false;
+        }
+        auto &environment = runtime->EsEnvironment();
+        auto *objectPtr = environment.FindModule("Object");
+        auto *weakPtr = environment.FindModule("WeakRef");
+        auto *objectModule = dynamic_cast<spectre::es2025::ObjectModule *>(objectPtr);
+        auto *weakRefModule = dynamic_cast<spectre::es2025::WeakRefModule *>(weakPtr);
+        ok &= ExpectTrue(objectModule != nullptr, "Object module available");
+        ok &= ExpectTrue(weakRefModule != nullptr, "WeakRef module available");
+        if (!objectModule || !weakRefModule) {
+            return false;
+        }
+        spectre::es2025::WeakRefModule::Handle invalidHandle = 0;
+        ok &= ExpectStatus(weakRefModule->Create(0, invalidHandle), StatusCode::InvalidArgument, "Reject null target");
+        spectre::es2025::ObjectModule::Handle targetA = 0;
+        spectre::es2025::ObjectModule::Handle targetB = 0;
+        ok &= ExpectStatus(objectModule->Create("test.weakref.A", 0, targetA), StatusCode::Ok, "Create targetA");
+        ok &= ExpectStatus(objectModule->Create("test.weakref.B", 0, targetB), StatusCode::Ok, "Create targetB");
+        spectre::es2025::WeakRefModule::Handle refA = 0;
+        spectre::es2025::WeakRefModule::Handle refB = 0;
+        ok &= ExpectStatus(weakRefModule->Create(targetA, refA), StatusCode::Ok, "Create refA");
+        ok &= ExpectStatus(weakRefModule->Create(targetB, refB), StatusCode::Ok, "Create refB");
+        ok &= ExpectTrue(weakRefModule->LiveCount() == 2, "Live count reflects allocations");
+        spectre::es2025::ObjectModule::Handle derefHandle = 0;
+        bool alive = false;
+        ok &= ExpectStatus(weakRefModule->Deref(refA, derefHandle, alive), StatusCode::Ok, "Deref refA");
+        ok &= ExpectTrue(alive && derefHandle == targetA, "refA alive");
+        ok &= ExpectTrue(weakRefModule->Alive(refB), "Alive(refB) true");
+        ok &= ExpectStatus(objectModule->Destroy(targetB), StatusCode::Ok, "Destroy targetB");
+        derefHandle = 0;
+        alive = true;
+        ok &= ExpectStatus(weakRefModule->Deref(refB, derefHandle, alive), StatusCode::Ok, "Deref refB after destroy");
+        ok &= ExpectTrue(!alive && derefHandle == 0, "refB cleared after GC");
+        ok &= ExpectStatus(weakRefModule->Refresh(refB, targetA), StatusCode::Ok, "Rebind refB");
+        ok &= ExpectTrue(weakRefModule->Alive(refB), "refB alive after refresh");
+        ok &= ExpectStatus(weakRefModule->Refresh(refB, 0), StatusCode::Ok, "Explicit clear");
+        ok &= ExpectTrue(!weakRefModule->Alive(refB), "refB not alive after clear");
+        ok &= ExpectStatus(weakRefModule->Destroy(refB), StatusCode::Ok, "Destroy refB");
+        ok &= ExpectTrue(weakRefModule->LiveCount() == 1, "Live count decremented");
+        ok &= ExpectStatus(weakRefModule->Compact(), StatusCode::Ok, "Compact weak refs");
+        runtime->Tick({1.0, 1});
+        const auto &metrics = weakRefModule->GetMetrics();
+        ok &= ExpectTrue(metrics.derefOps >= 2, "Deref metrics recorded");
+        ok &= ExpectTrue(metrics.clearedRefs >= 1, "Cleared refs tracked");
+        ok &= ExpectTrue(metrics.totalReleases >= 1, "Release metric updated");
+        ok &= ExpectStatus(weakRefModule->Destroy(refA), StatusCode::Ok, "Destroy refA");
+        return ok;
+    }
     bool WeakMapModulePurgesInvalidKeys() {
         auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
         bool ok = ExpectTrue(runtime != nullptr, "Runtime created");
@@ -2744,6 +2856,8 @@ int main() {
         {"MapModuleMaintainsOrder", MapModuleMaintainsOrder},
         {"SetModuleMaintainsUniqueness", SetModuleMaintainsUniqueness},
         {"WeakSetModuleCompactsInvalidEntries", WeakSetModuleCompactsInvalidEntries},
+        {"ReflectModuleProvidesMetaOperations", ReflectModuleProvidesMetaOperations},
+        {"WeakRefModuleTracksLifetime", WeakRefModuleTracksLifetime},
         {"WeakMapModulePurgesInvalidKeys", WeakMapModulePurgesInvalidKeys},
         {"MathModuleAcceleratesWorkloads", MathModuleAcceleratesWorkloads},
         {"TickAndReconfigureUpdatesState", TickAndReconfigureUpdatesState}

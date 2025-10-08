@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <cstdint>
 #include <string>
@@ -106,6 +106,7 @@ namespace spectre::es2025 {
         StatusCode Define(Handle handle, std::string_view key, const PropertyDescriptor &descriptor);
         StatusCode Set(Handle handle, std::string_view key, const Value &value);
         StatusCode Get(Handle handle, std::string_view key, Value &outValue) const;
+        StatusCode Describe(Handle handle, std::string_view key, PropertyDescriptor &outDescriptor) const;
         bool Has(Handle handle, std::string_view key) const;
         StatusCode Delete(Handle handle, std::string_view key, bool &outDeleted);
         StatusCode OwnKeys(Handle handle, std::vector<std::string> &keys) const;

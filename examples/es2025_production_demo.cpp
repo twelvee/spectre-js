@@ -18,6 +18,7 @@
 #include "spectre/es2025/modules/global_module.h"
 #include "spectre/es2025/modules/object_module.h"
 #include "spectre/es2025/modules/proxy_module.h"
+#include "spectre/es2025/modules/reflect_module.h"
 #include "spectre/es2025/modules/error_module.h"
 #include "spectre/es2025/modules/function_module.h"
 #include "spectre/es2025/modules/async_function_module.h"
@@ -41,6 +42,7 @@
 #include "spectre/es2025/modules/set_module.h"
 #include "spectre/es2025/modules/weak_set_module.h"
 #include "spectre/es2025/modules/weak_map_module.h"
+#include "spectre/es2025/modules/weak_ref_module.h"
 #include "spectre/es2025/value.h"
 
 namespace {
@@ -1122,6 +1124,62 @@ void DemonstrateProxyModule(spectre::es2025::ObjectModule &objectModule, spectre
             std::endl;
 }
 
+void DemonstrateReflectModule(spectre::es2025::ObjectModule &objectModule,
+                              spectre::es2025::ReflectModule &reflectModule) {
+    std::cout << "\nDemonstrating Reflect module" << std::endl;
+    spectre::es2025::ObjectModule::Handle model = 0;
+    if (objectModule.Create("demo.reflect.model", 0, model) != spectre::StatusCode::Ok) {
+        std::cout << "  object allocation failed" << std::endl;
+        return;
+    }
+    spectre::es2025::ObjectModule::PropertyDescriptor descriptor{};
+    descriptor.value = spectre::es2025::ObjectModule::Value::FromInt(120);
+    descriptor.enumerable = true;
+    descriptor.configurable = false;
+    descriptor.writable = true;
+    if (reflectModule.DefineProperty(model, "hp", descriptor) != spectre::StatusCode::Ok) {
+        std::cout << "  define property failed" << std::endl;
+        objectModule.Destroy(model);
+        return;
+    }
+    reflectModule.Set(model, "hp", spectre::es2025::ObjectModule::Value::FromInt(95));
+    spectre::es2025::ObjectModule::Value hpValue;
+    if (reflectModule.Get(model, "hp", hpValue) == spectre::StatusCode::Ok && hpValue.IsInt()) {
+        std::cout << "  hp => " << hpValue.Int() << std::endl;
+    }
+    spectre::es2025::ObjectModule::PropertyDescriptor readBack{};
+    if (reflectModule.GetOwnPropertyDescriptor(model, "hp", readBack) == spectre::StatusCode::Ok) {
+        std::cout << "  descriptor => enumerable:" << (readBack.enumerable ? "true" : "false")
+                  << " configurable:" << (readBack.configurable ? "true" : "false")
+                  << " writable:" << (readBack.writable ? "true" : "false") << std::endl;
+    }
+    std::vector<std::string> keys;
+    if (reflectModule.OwnKeys(model, keys) == spectre::StatusCode::Ok) {
+        std::cout << "  keys:";
+        for (const auto &key: keys) {
+            std::cout << " " << key;
+        }
+        std::cout << std::endl;
+    }
+    bool deleted = false;
+    auto deleteStatus = reflectModule.DeleteProperty(model, "hp", deleted);
+    std::cout << "  delete hp => status:" << static_cast<int>(deleteStatus)
+              << " removed:" << (deleted ? "true" : "false") << std::endl;
+    auto preventStatus = reflectModule.PreventExtensions(model);
+    std::cout << "  prevent extensions => status:" << static_cast<int>(preventStatus)
+              << " extensible:" << (reflectModule.IsExtensible(model) ? "true" : "false") << std::endl;
+    spectre::es2025::ObjectModule::PropertyDescriptor armorDescriptor{};
+    armorDescriptor.value = spectre::es2025::ObjectModule::Value::FromInt(50);
+    armorDescriptor.enumerable = true;
+    armorDescriptor.configurable = true;
+    armorDescriptor.writable = true;
+    auto armorStatus = reflectModule.DefineProperty(model, "armor", armorDescriptor);
+    std::cout << "  define armor status => " << static_cast<int>(armorStatus) << std::endl;
+    auto prototype = reflectModule.GetPrototypeOf(model);
+    std::cout << "  prototype handle => " << prototype << std::endl;
+    objectModule.Destroy(model);
+}
+
 void DemonstrateMapModule(spectre::es2025::MapModule &mapModule) {
     std::cout << "\nDemonstrating Map module" << std::endl;
     spectre::es2025::MapModule::Handle handle = 0;
@@ -1270,6 +1328,61 @@ void DemonstrateWeakMapModule(spectre::es2025::ObjectModule &objectModule,
     std::cout << "  size after destroy => " << weakMapModule.Size(handle) << std::endl;
     weakMapModule.Destroy(handle);
     objectModule.Destroy(keyB);
+}
+
+void DemonstrateWeakRefModule(spectre::es2025::ObjectModule &objectModule,
+                              spectre::es2025::WeakRefModule &weakRefModule) {
+    std::cout << "\nDemonstrating WeakRef module" << std::endl;
+    spectre::es2025::ObjectModule::Handle hero = 0;
+    spectre::es2025::ObjectModule::Handle loot = 0;
+    if (objectModule.Create("demo.weakref.hero", 0, hero) != spectre::StatusCode::Ok ||
+        objectModule.Create("demo.weakref.loot", 0, loot) != spectre::StatusCode::Ok) {
+        std::cout << "  object allocation failed" << std::endl;
+        if (hero != 0) {
+            objectModule.Destroy(hero);
+        }
+        if (loot != 0) {
+            objectModule.Destroy(loot);
+        }
+        return;
+    }
+    spectre::es2025::WeakRefModule::Handle heroRef = 0;
+    spectre::es2025::WeakRefModule::Handle lootRef = 0;
+    if (weakRefModule.Create(hero, heroRef) != spectre::StatusCode::Ok ||
+        weakRefModule.Create(loot, lootRef) != spectre::StatusCode::Ok) {
+        std::cout << "  weak refs unavailable" << std::endl;
+        if (heroRef != 0) {
+            weakRefModule.Destroy(heroRef);
+        }
+        if (lootRef != 0) {
+            weakRefModule.Destroy(lootRef);
+        }
+        objectModule.Destroy(hero);
+        objectModule.Destroy(loot);
+        return;
+    }
+    std::cout << "  handles => hero:" << heroRef << " loot:" << lootRef << std::endl;
+    spectre::es2025::ObjectModule::Handle derefHandle = 0;
+    bool alive = false;
+    if (weakRefModule.Deref(heroRef, derefHandle, alive) == spectre::StatusCode::Ok) {
+        std::cout << "  hero alive => " << (alive ? "true" : "false") << " handle:" << derefHandle << std::endl;
+    }
+    objectModule.Destroy(loot);
+    if (weakRefModule.Deref(lootRef, derefHandle, alive) == spectre::StatusCode::Ok) {
+        std::cout << "  loot alive after destroy => " << (alive ? "true" : "false") << std::endl;
+    }
+    weakRefModule.Refresh(lootRef, hero);
+    if (weakRefModule.Deref(lootRef, derefHandle, alive) == spectre::StatusCode::Ok) {
+        std::cout << "  loot ref rebound => " << (alive ? "true" : "false") << " handle:" << derefHandle << std::endl;
+    }
+    weakRefModule.Destroy(lootRef);
+    weakRefModule.Destroy(heroRef);
+    weakRefModule.Compact();
+    const auto &metrics = weakRefModule.GetMetrics();
+    std::cout << "  metrics => live:" << weakRefModule.LiveCount()
+              << " derefOps:" << metrics.derefOps
+              << " cleared:" << metrics.clearedRefs << std::endl;
+    objectModule.Destroy(hero);
 }
 
 void DemonstrateIteratorModule(spectre::es2025::IteratorModule &iteratorModule) {
@@ -1486,6 +1599,13 @@ int main() {
         return 1;
     }
 
+    auto *reflectModulePtr = environment.FindModule("Reflect");
+    auto *reflectModule = dynamic_cast<es2025::ReflectModule *>(reflectModulePtr);
+    if (!reflectModule) {
+        std::cerr << "Reflect module unavailable" << std::endl;
+        return 1;
+    }
+
     auto *proxyModulePtr = environment.FindModule("Proxy");
     auto *proxyModule = dynamic_cast<es2025::ProxyModule *>(proxyModulePtr);
     if (!proxyModule) {
@@ -1511,6 +1631,13 @@ int main() {
     auto *weakMapModule = dynamic_cast<es2025::WeakMapModule *>(weakMapModulePtr);
     if (!weakMapModule) {
         std::cerr << "WeakMap module unavailable" << std::endl;
+        return 1;
+    }
+
+    auto *weakRefModulePtr = environment.FindModule("WeakRef");
+    auto *weakRefModule = dynamic_cast<es2025::WeakRefModule *>(weakRefModulePtr);
+    if (!weakRefModule) {
+        std::cerr << "WeakRef module unavailable" << std::endl;
         return 1;
     }
 
@@ -1688,10 +1815,12 @@ int main() {
     DemonstrateNumberModule(*numberModule);
     DemonstrateBigIntModule(*bigintModule);
     DemonstrateObjectModule(*objectModule);
+    DemonstrateReflectModule(*objectModule, *reflectModule);
     DemonstrateProxyModule(*objectModule, *proxyModule);
     DemonstrateMapModule(*mapModule);
     DemonstrateSetModule(*setModule);
     DemonstrateWeakMapModule(*objectModule, *weakMapModule);
+    DemonstrateWeakRefModule(*objectModule, *weakRefModule);
     DemonstrateWeakSetModule(*objectModule, *weakSetModule);
 
     std::cout << "\nDemonstrating error capture" << std::endl;

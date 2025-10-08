@@ -1,4 +1,4 @@
-﻿
+
 #include "spectre/es2025/modules/object_module.h"
 
 #include <algorithm>
@@ -531,6 +531,37 @@ namespace spectre::es2025 {
         }
         const_cast<ObjectModule *>(this)->m_Metrics.misses += 1;
         return StatusCode::NotFound;
+    }
+
+    StatusCode ObjectModule::Describe(Handle handle, std::string_view key, PropertyDescriptor &outDescriptor) const {
+        outDescriptor.value.Reset();
+        outDescriptor.enumerable = false;
+        outDescriptor.configurable = false;
+        outDescriptor.writable = false;
+        const auto *object = Find(handle);
+        if (!object) {
+            return StatusCode::NotFound;
+        }
+        auto hash = HashKey(key);
+        std::uint32_t bucket = 0;
+        bool collision = false;
+        auto index = Locate(*object, key, hash, bucket, collision);
+        if (index == kInvalidIndex) {
+            const_cast<ObjectModule *>(this)->m_Metrics.misses += 1;
+            return StatusCode::NotFound;
+        }
+        const auto &slot = object->properties[index];
+        if (!slot.active) {
+            const_cast<ObjectModule *>(this)->m_Metrics.misses += 1;
+            return StatusCode::NotFound;
+        }
+        outDescriptor.value = slot.value;
+        outDescriptor.enumerable = IsEnumerable(slot.attributes);
+        outDescriptor.configurable = IsConfigurable(slot.attributes);
+        outDescriptor.writable = IsWritable(slot.attributes);
+        const_cast<ObjectModule *>(this)->m_Metrics.fastPathHits += 1;
+        const_cast<ObjectModule *>(this)->TouchMetrics();
+        return StatusCode::Ok;
     }
 
     bool ObjectModule::Has(Handle handle, std::string_view key) const {
