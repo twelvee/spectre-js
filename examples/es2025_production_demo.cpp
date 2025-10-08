@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cctype>
 #include <array>
+#include <cstdint>
 
 #include "spectre/config.h"
 #include "spectre/runtime.h"
@@ -20,6 +21,7 @@
 #include "spectre/es2025/modules/atomics_module.h"
 #include "spectre/es2025/modules/boolean_module.h"
 #include "spectre/es2025/modules/array_module.h"
+#include "spectre/es2025/modules/array_buffer_module.h"
 #include "spectre/es2025/modules/iterator_module.h"
 #include "spectre/es2025/modules/generator_module.h"
 #include "spectre/es2025/modules/string_module.h"
@@ -170,6 +172,86 @@ namespace {
                 << " s2d=" << metrics.transitionsToDense << std::endl;
     }
 
+    void DemonstrateArrayBufferModule(spectre::es2025::ArrayBufferModule &bufferModule) {
+        std::cout << "\nArrayBuffer streaming demo" << std::endl;
+        spectre::es2025::ArrayBufferModule::Handle streamHandle = 0;
+        spectre::es2025::ArrayBufferModule::Handle stagingHandle = 0;
+        auto release = [&](spectre::es2025::ArrayBufferModule::Handle &handle) {
+            if (handle != 0) {
+                bufferModule.Destroy(handle);
+                handle = 0;
+            }
+        };
+
+        if (bufferModule.Create("demo.stream", 1024, streamHandle) != spectre::StatusCode::Ok) {
+            std::cout << "  stream allocation failed" << std::endl;
+            return;
+        }
+        if (bufferModule.Create("demo.stage", 1024, stagingHandle) != spectre::StatusCode::Ok) {
+            std::cout << "  staging allocation failed" << std::endl;
+            release(streamHandle);
+            return;
+        }
+
+        std::array<std::uint8_t, 128> header{};
+        for (std::size_t i = 0; i < header.size(); ++i) {
+            header[i] = static_cast<std::uint8_t>(0x20 + (i & 0x0F));
+        }
+        if (bufferModule.CopyIn(streamHandle, 0, header.data(), header.size()) != spectre::StatusCode::Ok) {
+            std::cout << "  header upload failed" << std::endl;
+            release(stagingHandle);
+            release(streamHandle);
+            return;
+        }
+
+        std::array<std::uint8_t, 512> payload{};
+        for (std::size_t i = 0; i < payload.size(); ++i) {
+            payload[i] = static_cast<std::uint8_t>((i * 11) & 0xFF);
+        }
+        if (bufferModule.CopyIn(streamHandle, header.size(), payload.data(), payload.size()) != spectre::StatusCode::Ok) {
+            std::cout << "  payload upload failed" << std::endl;
+            release(stagingHandle);
+            release(streamHandle);
+            return;
+        }
+
+        const auto totalBytes = header.size() + payload.size();
+        if (bufferModule.CopyToBuffer(streamHandle, stagingHandle, 0, 0, totalBytes) != spectre::StatusCode::Ok) {
+            std::cout << "  staging copy failed" << std::endl;
+            release(stagingHandle);
+            release(streamHandle);
+            return;
+        }
+
+        std::vector<std::uint8_t> preview(24, 0);
+        if (bufferModule.CopyOut(stagingHandle, 0, preview.data(), preview.size()) == spectre::StatusCode::Ok) {
+            std::cout << "  staging preview:";
+            auto flags = std::cout.flags();
+            auto fill = std::cout.fill('0');
+            std::cout << std::hex;
+            for (auto byte: preview) {
+                std::cout << ' ' << std::setw(2) << static_cast<int>(byte);
+            }
+            std::cout.flags(flags);
+            std::cout.fill(fill);
+            std::cout << std::endl;
+        }
+
+        if (bufferModule.Resize(streamHandle, 4096, true) == spectre::StatusCode::Ok) {
+            bufferModule.Fill(streamHandle, 0);
+            bufferModule.CopyToBuffer(stagingHandle, streamHandle, 0, 0, totalBytes);
+        }
+
+        bufferModule.Detach(stagingHandle);
+        release(stagingHandle);
+        release(streamHandle);
+
+        const auto &metrics = bufferModule.GetMetrics();
+        std::cout << "  ArrayBuffer metrics => allocations=" << metrics.allocations
+                << " pool-reuses=" << metrics.poolReuses
+                << " detaches=" << metrics.detaches
+                << " peak-bytes=" << metrics.peakBytesInUse << std::endl;
+    }
     void DemonstrateAtomicsModule(spectre::es2025::AtomicsModule &atomicsModule) {
         std::cout << "\nAtomics lane demo" << std::endl;
         spectre::es2025::AtomicsModule::Handle buffer = 0;
@@ -937,6 +1019,12 @@ int main() {
         return 1;
     }
 
+    auto *arrayBufferModulePtr = environment.FindModule("ArrayBuffer");
+    auto *arrayBufferModule = dynamic_cast<es2025::ArrayBufferModule *>(arrayBufferModulePtr);
+    if (!arrayBufferModule) {
+        std::cerr << "ArrayBuffer module unavailable" << std::endl;
+        return 1;
+    }
     auto *arrayModulePtr = environment.FindModule("Array");
     auto *arrayModule = dynamic_cast<es2025::ArrayModule *>(arrayModulePtr);
     if (!arrayModule) {
@@ -1022,6 +1110,7 @@ int main() {
     DemonstrateIteratorModule(*iteratorModule);
     DemonstrateGeneratorModule(*generatorModule, *iteratorModule);
     DemonstrateArrayModule(*arrayModule);
+    DemonstrateArrayBufferModule(*arrayBufferModule);
     DemonstrateAtomicsModule(*atomicsModule);
     DemonstrateBooleanModule(*booleanModule);
     DemonstrateStringModule(*stringModule);
@@ -1073,5 +1162,3 @@ int main() {
     std::cout << "\nES2025 production scaffold ready" << std::endl;
     return 0;
 }
-
-

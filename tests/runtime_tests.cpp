@@ -3,6 +3,7 @@
 #include <string>
 #include <algorithm>
 #include <array>
+#include <cstdint>
 #include <utility>
 #include <vector>
 #include <cmath>
@@ -23,6 +24,7 @@
 #include "spectre/es2025/modules/atomics_module.h"
 #include "spectre/es2025/modules/boolean_module.h"
 #include "spectre/es2025/modules/array_module.h"
+#include "spectre/es2025/modules/array_buffer_module.h"
 #include "spectre/es2025/modules/iterator_module.h"
 #include "spectre/es2025/modules/generator_module.h"
 #include "spectre/es2025/modules/math_module.h"
@@ -1108,6 +1110,155 @@ namespace {
         return ok;
     }
 
+
+
+
+        bool ArrayBufferModuleAllocatesAndPools() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        auto &environment = runtime->EsEnvironment();
+        auto *bufferModule = dynamic_cast<spectre::es2025::ArrayBufferModule *>(environment.FindModule("ArrayBuffer"));
+        bool ok = ExpectTrue(bufferModule != nullptr, "ArrayBuffer module available");
+        if (!bufferModule) {
+            return false;
+        }
+        spectre::es2025::ArrayBufferModule::Handle bufferHandle = 0;
+        ok &= ExpectStatus(bufferModule->Create("demo.buffer", 256, bufferHandle), StatusCode::Ok, "Create buffer");
+        ok &= ExpectTrue(bufferModule->Has(bufferHandle), "Buffer registered");
+        ok &= ExpectTrue(bufferModule->ByteLength(bufferHandle) == 256, "Byte length reported");
+        std::vector<std::uint8_t> scratch(256, 0xCD);
+        ok &= ExpectStatus(bufferModule->CopyOut(bufferHandle, 0, scratch.data(), scratch.size()), StatusCode::Ok,
+                           "CopyOut fresh buffer");
+        bool zeroed = std::all_of(scratch.begin(), scratch.end(), [](std::uint8_t value) {
+            return value == 0;
+        });
+        ok &= ExpectTrue(zeroed, "Fresh buffer zero initialised");
+        for (std::size_t i = 0; i < scratch.size(); ++i) {
+            scratch[i] = static_cast<std::uint8_t>(i & 0xFF);
+        }
+        ok &= ExpectStatus(bufferModule->CopyIn(bufferHandle, 0, scratch.data(), scratch.size()), StatusCode::Ok,
+                           "CopyIn pattern");
+        spectre::es2025::ArrayBufferModule::Handle sliceHandle = 0;
+        ok &= ExpectStatus(bufferModule->Slice(bufferHandle, 32, 64, "demo.slice", sliceHandle), StatusCode::Ok,
+                           "Create slice");
+        ok &= ExpectTrue(bufferModule->ByteLength(sliceHandle) == 32, "Slice byte length");
+        std::array<std::uint8_t, 32> sliceData{};
+        ok &= ExpectStatus(bufferModule->CopyOut(sliceHandle, 0, sliceData.data(), sliceData.size()), StatusCode::Ok,
+                           "CopyOut slice");
+        bool contiguous = true;
+        for (std::size_t i = 0; i < sliceData.size(); ++i) {
+            contiguous &= sliceData[i] == static_cast<std::uint8_t>((i + 32) & 0xFF);
+        }
+        ok &= ExpectTrue(contiguous, "Slice matches source window");
+        spectre::es2025::ArrayBufferModule::Handle cloneHandle = 0;
+        ok &= ExpectStatus(bufferModule->Clone(bufferHandle, "demo.clone", cloneHandle), StatusCode::Ok,
+                           "Clone buffer");
+        std::vector<std::uint8_t> cloneData(256, 0);
+        ok &= ExpectStatus(bufferModule->CopyOut(cloneHandle, 0, cloneData.data(), cloneData.size()), StatusCode::Ok,
+                           "CopyOut clone");
+        bool cloneMatches = true;
+        for (std::size_t i = 0; i < cloneData.size(); ++i) {
+            cloneMatches &= cloneData[i] == static_cast<std::uint8_t>(i & 0xFF);
+        }
+        ok &= ExpectTrue(cloneMatches, "Clone preserves payload");
+        ok &= ExpectStatus(bufferModule->Fill(bufferHandle, 0xAA), StatusCode::Ok, "Fill buffer");
+        ok &= ExpectStatus(bufferModule->CopyOut(bufferHandle, 0, scratch.data(), scratch.size()), StatusCode::Ok,
+                           "CopyOut filled buffer");
+        bool filled = std::all_of(scratch.begin(), scratch.end(), [](std::uint8_t value) {
+            return value == 0xAA;
+        });
+        ok &= ExpectTrue(filled, "Fill wrote expected value");
+        ok &= ExpectStatus(bufferModule->CopyOut(cloneHandle, 0, cloneData.data(), cloneData.size()), StatusCode::Ok,
+                           "Re-read clone");
+        bool cloneUnaffected = true;
+        for (std::size_t i = 0; i < cloneData.size(); ++i) {
+            cloneUnaffected &= cloneData[i] == static_cast<std::uint8_t>(i & 0xFF);
+        }
+        ok &= ExpectTrue(cloneUnaffected, "Clone isolated from source fill");
+        const auto metricsBeforeDestroy = bufferModule->GetMetrics();
+        ok &= ExpectStatus(bufferModule->Destroy(sliceHandle), StatusCode::Ok, "Destroy slice");
+        ok &= ExpectStatus(bufferModule->Destroy(bufferHandle), StatusCode::Ok, "Destroy primary buffer");
+        spectre::es2025::ArrayBufferModule::Handle reuseHandle = 0;
+        ok &= ExpectStatus(bufferModule->Create("demo.reuse", 256, reuseHandle), StatusCode::Ok, "Reuse allocation");
+        const auto metricsAfterReuse = bufferModule->GetMetrics();
+        ok &= ExpectTrue(metricsAfterReuse.poolReuses >= metricsBeforeDestroy.poolReuses + 1,
+                        "Pool reuse accounted");
+        ok &= ExpectTrue(metricsAfterReuse.bytesInUse >= 256, "Bytes in use tracked");
+        ok &= ExpectStatus(bufferModule->Destroy(reuseHandle), StatusCode::Ok, "Destroy reused buffer");
+        ok &= ExpectStatus(bufferModule->Destroy(cloneHandle), StatusCode::Ok, "Destroy clone");
+        return ok;
+    }
+
+bool ArrayBufferModuleResizesAndDetaches() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        auto &environment = runtime->EsEnvironment();
+        auto *bufferModule = dynamic_cast<spectre::es2025::ArrayBufferModule *>(environment.FindModule("ArrayBuffer"));
+        bool ok = ExpectTrue(bufferModule != nullptr, "ArrayBuffer module available for resize test");
+        if (!bufferModule) {
+            return false;
+        }
+        spectre::es2025::ArrayBufferModule::Handle sourceHandle = 0;
+        ok &= ExpectStatus(bufferModule->Create("worker.source", 128, sourceHandle), StatusCode::Ok, "Create source");
+        std::array<std::uint8_t, 128> basePattern{};
+        for (std::size_t i = 0; i < basePattern.size(); ++i) {
+            basePattern[i] = static_cast<std::uint8_t>((i * 3) & 0xFF);
+        }
+        ok &= ExpectStatus(bufferModule->CopyIn(sourceHandle, 0, basePattern.data(), basePattern.size()), StatusCode::Ok,
+                           "Seed pattern");
+        ok &= ExpectStatus(bufferModule->Resize(sourceHandle, 512, true), StatusCode::Ok, "Grow preserving data");
+        ok &= ExpectTrue(bufferModule->ByteLength(sourceHandle) == 512, "Growth length reported");
+        std::vector<std::uint8_t> growCheck(512, 0);
+        ok &= ExpectStatus(bufferModule->CopyOut(sourceHandle, 0, growCheck.data(), growCheck.size()), StatusCode::Ok,
+                           "CopyOut grown buffer");
+        bool prefixPreserved = true;
+        for (std::size_t i = 0; i < basePattern.size(); ++i) {
+            prefixPreserved &= growCheck[i] == basePattern[i];
+        }
+        bool tailZero = true;
+        for (std::size_t i = basePattern.size(); i < growCheck.size(); ++i) {
+            tailZero &= growCheck[i] == 0;
+        }
+        ok &= ExpectTrue(prefixPreserved && tailZero, "Resize preserved prefix and zeroed tail");
+        ok &= ExpectStatus(bufferModule->Resize(sourceHandle, 64, false), StatusCode::Ok, "Shrink without preserve");
+        ok &= ExpectTrue(bufferModule->ByteLength(sourceHandle) == 64, "Shrink length reported");
+        std::array<std::uint8_t, 64> shrinkCheck{};
+        ok &= ExpectStatus(bufferModule->CopyOut(sourceHandle, 0, shrinkCheck.data(), shrinkCheck.size()), StatusCode::Ok,
+                           "CopyOut shrunk buffer");
+        bool shrinkCleared = std::all_of(shrinkCheck.begin(), shrinkCheck.end(), [](std::uint8_t value) {
+            return value == 0;
+        });
+        ok &= ExpectTrue(shrinkCleared, "Shrink cleared contents when not preserving");
+        spectre::es2025::ArrayBufferModule::Handle targetHandle = 0;
+        ok &= ExpectStatus(bufferModule->Create("worker.target", 96, targetHandle), StatusCode::Ok,
+                           "Create target buffer");
+        std::array<std::uint8_t, 96> targetScratch{};
+        targetScratch.fill(0);
+        ok &= ExpectStatus(bufferModule->Fill(targetHandle, 0), StatusCode::Ok, "Zero target");
+        ok &= ExpectStatus(bufferModule->CopyIn(sourceHandle, 0, basePattern.data(), 64), StatusCode::Ok,
+                           "Overwrite source window");
+        ok &= ExpectStatus(bufferModule->CopyToBuffer(sourceHandle, targetHandle, 8, 16, 40), StatusCode::Ok,
+                           "Copy between buffers");
+        ok &= ExpectStatus(bufferModule->CopyOut(targetHandle, 0, targetScratch.data(), targetScratch.size()),
+                           StatusCode::Ok, "CopyOut target after blit");
+        bool blitValid = true;
+        for (std::size_t i = 0; i < 40; ++i) {
+            auto expected = static_cast<std::uint8_t>(((i + 8) * 3) & 0xFF);
+            blitValid &= targetScratch[i + 16] == expected;
+        }
+        ok &= ExpectTrue(blitValid, "CopyToBuffer populated expected region");
+        ok &= ExpectStatus(bufferModule->Detach(sourceHandle), StatusCode::Ok, "Detach source");
+        ok &= ExpectTrue(bufferModule->Detached(sourceHandle), "Detach flag set");
+        ok &= ExpectTrue(bufferModule->ByteLength(sourceHandle) == 0, "Detached byteLength zero");
+        auto detachStatus = bufferModule->CopyIn(sourceHandle, 0, basePattern.data(), 8);
+        ok &= ExpectStatus(detachStatus, StatusCode::InvalidArgument, "Detached rejects writes");
+        const auto &metrics = bufferModule->GetMetrics();
+        ok &= ExpectTrue(metrics.resizes >= 2, "Resize metric tracked");
+        ok &= ExpectTrue(metrics.detaches >= 1, "Detach metric tracked");
+        ok &= ExpectTrue(metrics.copyBetweenBuffers >= 1, "CopyBetweenBuffers metric tracked");
+        ok &= ExpectStatus(bufferModule->Destroy(sourceHandle), StatusCode::Ok, "Destroy detached source");
+        ok &= ExpectStatus(bufferModule->Destroy(targetHandle), StatusCode::Ok, "Destroy target");
+        return ok;
+    }
+
     bool BooleanModuleCastsAndBoxes() {
         auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
         auto &environment = runtime->EsEnvironment();
@@ -1774,6 +1925,8 @@ namespace {
 
 int main() {
     std::vector<TestCase> tests{
+        {"ArrayBufferModuleAllocatesAndPools", ArrayBufferModuleAllocatesAndPools},
+        {"ArrayBufferModuleResizesAndDetaches", ArrayBufferModuleResizesAndDetaches},
         {"DefaultConfigPopulatesDefaults", DefaultConfigPopulatesDefaults},
         {"ContextLifecycle", ContextLifecycle},
         {"LoadFailuresSurfaceStatuses", LoadFailuresSurfaceStatuses},
@@ -1832,4 +1985,5 @@ int main() {
     std::cout << "Executed " << passed << " / " << tests.size() << " tests" << std::endl;
     return 0;
 }
+
 
