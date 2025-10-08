@@ -34,6 +34,8 @@
 #include "spectre/es2025/modules/bigint_module.h"
 #include "spectre/es2025/modules/date_module.h"
 #include "spectre/es2025/modules/string_module.h"
+#include "spectre/es2025/modules/regexp_module.h"
+#include "spectre/es2025/modules/typed_array_module.h"
 #include "spectre/es2025/modules/symbol_module.h"
 
 namespace {
@@ -368,6 +370,121 @@ namespace {
         ok &= ExpectStatus(interopStatus, StatusCode::Ok, "Interop register status");
         auto dupStatus = suite.interop->Register(binding);
         ok &= ExpectStatus(dupStatus, StatusCode::AlreadyExists, "Interop duplicate status");
+        return ok;
+    }
+
+    bool RegExpModuleCompilesAndMatches() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        auto &environment = runtime->EsEnvironment();
+        auto *module = dynamic_cast<spectre::es2025::RegExpModule *>(environment.FindModule("RegExp"));
+        bool ok = ExpectTrue(module != nullptr, "RegExp module available");
+        if (!module) {
+            return false;
+        }
+
+        spectre::es2025::RegExpModule::Handle globalHandle = 0;
+        ok &= ExpectStatus(module->Compile("a+(b)", "gi", globalHandle), StatusCode::Ok,
+                           "Compile global ignore-case pattern");
+
+        spectre::es2025::RegExpModule::Handle cachedHandle = 0;
+        ok &= ExpectStatus(module->Compile("a+(b)", "ig", cachedHandle), StatusCode::Ok,
+                           "Compile with reordered flags hits cache");
+        ok &= ExpectTrue(globalHandle == cachedHandle, "Compile reuses cached handle");
+
+        spectre::es2025::RegExpModule::MatchResult firstMatch;
+        ok &= ExpectStatus(module->Exec(globalHandle, "aaabAAAb", std::numeric_limits<std::size_t>::max(), firstMatch),
+                           StatusCode::Ok, "Exec succeeds");
+        ok &= ExpectTrue(firstMatch.matched, "Exec finds match");
+        ok &= ExpectTrue(firstMatch.index == 0, "Match index");
+        ok &= ExpectTrue(firstMatch.groups.size() >= 2, "Capture group count");
+        if (firstMatch.groups.size() >= 2) {
+            ok &= ExpectTrue(firstMatch.groups[1].begin == 3 && firstMatch.groups[1].end == 4,
+                             "Capture span expected");
+        }
+        ok &= ExpectTrue(module->LastIndex(globalHandle) == firstMatch.nextIndex, "LastIndex updated after exec");
+
+        bool matched = false;
+        ok &= ExpectStatus(module->Test(globalHandle, "aaabAAAb", matched), StatusCode::Ok, "Test reuses last index");
+        ok &= ExpectTrue(matched, "Test detects next hit");
+        ok &= ExpectTrue(module->LastIndex(globalHandle) > firstMatch.nextIndex,
+                         "Test advanced last index for global pattern");
+
+        std::string replaced;
+        ok &= ExpectStatus(module->Replace(globalHandle, "aaabAAAb", "x", replaced, true), StatusCode::Ok,
+                           "Replace applies");
+        ok &= ExpectTrue(replaced == "xx", "Replace output");
+        ok &= ExpectTrue(module->LastIndex(globalHandle) == 0, "Global replace resets last index");
+
+        spectre::es2025::RegExpModule::Handle splitHandle = 0;
+        ok &= ExpectStatus(module->Compile("--", "", splitHandle), StatusCode::Ok, "Compile split pattern");
+        std::vector<std::string> parts;
+        ok &= ExpectStatus(module->Split(splitHandle, "foo--bar--baz--tail", 3, parts), StatusCode::Ok,
+                           "Split segments");
+        ok &= ExpectTrue(parts.size() == 3, "Split respects limit");
+        if (parts.size() == 3) {
+            ok &= ExpectTrue(parts[0] == "foo" && parts[1] == "bar" && parts[2] == "baz--tail",
+                             "Split produces remainder");
+        }
+
+        spectre::es2025::RegExpModule::Handle stickyHandle = 0;
+        ok &= ExpectStatus(module->Compile("\\d+", "y", stickyHandle), StatusCode::Ok,
+                           "Compile sticky pattern");
+        spectre::es2025::RegExpModule::MatchResult stickyMatch;
+        ok &= ExpectStatus(module->Exec(stickyHandle, "123-456", 0, stickyMatch), StatusCode::Ok,
+                           "Sticky exec matches prefix");
+        ok &= ExpectTrue(stickyMatch.matched && stickyMatch.length == 3, "Sticky match length");
+        spectre::es2025::RegExpModule::MatchResult stickyMiss;
+        ok &= ExpectStatus(module->Exec(stickyHandle, "123-456", std::numeric_limits<std::size_t>::max(), stickyMiss),
+                           StatusCode::Ok, "Sticky second exec");
+        ok &= ExpectTrue(!stickyMiss.matched, "Sticky fails at non-adjacent position");
+
+        return ok;
+    }
+
+    bool TypedArrayModuleCoversElementOps() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        auto &environment = runtime->EsEnvironment();
+        auto *module = dynamic_cast<spectre::es2025::TypedArrayModule *>(environment.FindModule("TypedArray"));
+        bool ok = ExpectTrue(module != nullptr, "TypedArray module available");
+        if (!module) {
+            return false;
+        }
+
+        spectre::es2025::TypedArrayModule::Handle handle = 0;
+        ok &= ExpectStatus(module->Create(spectre::es2025::TypedArrayModule::ElementType::Uint8, 8, "buffer", handle),
+                           StatusCode::Ok, "Create Uint8 array");
+        ok &= ExpectTrue(module->Length(handle) == 8, "Length matches");
+        ok &= ExpectStatus(module->Fill(handle, 255.0), StatusCode::Ok, "Fill entire array");
+        ok &= ExpectStatus(module->Set(handle, 3, 127.0), StatusCode::Ok, "Set index");
+        double value = 0.0;
+        ok &= ExpectStatus(module->Get(handle, 3, value), StatusCode::Ok, "Get index");
+        ok &= ExpectTrue(value == 127.0, "Value roundtrip");
+        ok &= ExpectStatus(module->CopyWithin(handle, 4, 0, 4), StatusCode::Ok, "CopyWithin");
+
+        std::vector<double> dense;
+        ok &= ExpectStatus(module->ToVector(handle, dense), StatusCode::Ok, "ToVector succeeds");
+        ok &= ExpectTrue(dense.size() == 8, "Vector size");
+
+        spectre::es2025::TypedArrayModule::Handle sub = 0;
+        ok &= ExpectStatus(module->Subarray(handle, 2, 6, "view", sub), StatusCode::Ok, "Create view");
+        ok &= ExpectTrue(module->Length(sub) == 4, "View length");
+        ok &= ExpectTrue(module->ByteOffset(sub) == 2, "View byte offset");
+        ok &= ExpectStatus(module->Set(sub, 1, 64.0), StatusCode::Ok, "Mutate view");
+        ok &= ExpectStatus(module->Get(handle, 3, value), StatusCode::Ok, "Shared buffer update visible");
+        ok &= ExpectTrue(value == 64.0, "View mutation applied");
+
+        spectre::es2025::TypedArrayModule::Handle big = 0;
+        ok &= ExpectStatus(module->Create(spectre::es2025::TypedArrayModule::ElementType::BigInt64, 2, "big", big),
+                           StatusCode::Ok, "Create BigInt array");
+        ok &= ExpectStatus(module->FillBigInt(big, 42), StatusCode::Ok, "FillBigInt");
+        std::int64_t bigValue = 0;
+        ok &= ExpectStatus(module->GetBigInt(big, 1, bigValue), StatusCode::Ok, "GetBigInt");
+        ok &= ExpectTrue(bigValue == 42, "BigInt value");
+        ok &= ExpectStatus(module->SetBigInt(big, 0, -7), StatusCode::Ok, "SetBigInt negative");
+
+        ok &= ExpectStatus(module->Destroy(sub), StatusCode::Ok, "Destroy subarray");
+        ok &= ExpectStatus(module->Destroy(big), StatusCode::Ok, "Destroy BigInt array");
+        ok &= ExpectStatus(module->Destroy(handle), StatusCode::Ok, "Destroy primary array");
         return ok;
     }
 
@@ -2053,6 +2170,8 @@ int main() {
         {"ObjectModuleHandlesPrototypes", ObjectModuleHandlesPrototypes},
         {"ProxyModuleCoordinatesTraps", ProxyModuleCoordinatesTraps},
         {"SymbolModuleManagesSymbols", SymbolModuleManagesSymbols},
+        {"RegExpModuleCompilesAndMatches", RegExpModuleCompilesAndMatches},
+        {"TypedArrayModuleCoversElementOps", TypedArrayModuleCoversElementOps},
         {"MapModuleMaintainsOrder", MapModuleMaintainsOrder},
         {"SetModuleMaintainsUniqueness", SetModuleMaintainsUniqueness},
         {"WeakSetModuleCompactsInvalidEntries", WeakSetModuleCompactsInvalidEntries},
@@ -2077,5 +2196,16 @@ int main() {
     std::cout << "Executed " << passed << " / " << tests.size() << " tests" << std::endl;
     return 0;
 }
+
+
+
+
+
+
+
+
+
+
+
 
 

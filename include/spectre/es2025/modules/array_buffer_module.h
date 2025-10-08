@@ -12,7 +12,9 @@
 #include "spectre/es2025/module.h"
 
 namespace spectre::es2025 {
+    class TypedArrayModule;
     class ArrayBufferModule final : public Module {
+        friend class TypedArrayModule;
     public:
         using Handle = std::uint64_t;
 

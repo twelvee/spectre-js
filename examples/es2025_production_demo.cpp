@@ -2,6 +2,7 @@
 #include <iomanip>
 #include <iostream>
 #include <sstream>
+#include <limits>
 #include <string>
 #include <vector>
 #include <algorithm>
@@ -25,6 +26,8 @@
 #include "spectre/es2025/modules/iterator_module.h"
 #include "spectre/es2025/modules/generator_module.h"
 #include "spectre/es2025/modules/string_module.h"
+#include "spectre/es2025/modules/regexp_module.h"
+#include "spectre/es2025/modules/typed_array_module.h"
 #include "spectre/es2025/modules/symbol_module.h"
 #include "spectre/es2025/modules/math_module.h"
 #include "spectre/es2025/modules/number_module.h"
@@ -372,9 +375,9 @@ void DemonstrateStringModule(spectre::es2025::StringModule &stringModule) {
 
     const auto &metrics = stringModule.GetMetrics();
     std::cout << "  metrics: allocations=" << metrics.allocations
-            << " transforms=" << metrics.transforms
-            << " internHits=" << metrics.internHits
-            << " internMisses=" << metrics.internMisses << std::endl;
+              << " transforms=" << metrics.transforms
+              << " internHits=" << metrics.internHits
+              << " internMisses=" << metrics.internMisses << std::endl;
 
     if (slice != 0) {
         stringModule.Release(slice);
@@ -383,6 +386,96 @@ void DemonstrateStringModule(spectre::es2025::StringModule &stringModule) {
         stringModule.Release(intern);
     }
     stringModule.Release(title);
+}
+
+void DemonstrateRegExpModule(spectre::es2025::RegExpModule &regexpModule) {
+    std::cout << "\nRegExp pipeline demo" << std::endl;
+    spectre::es2025::RegExpModule::Handle pattern = 0;
+    if (regexpModule.Compile("([A-Z]+)[0-9]+", "gi", pattern) != spectre::StatusCode::Ok) {
+        std::cout << "  failed to compile pattern" << std::endl;
+        return;
+    }
+    spectre::es2025::RegExpModule::MatchResult result;
+    regexpModule.Exec(pattern, "NODE32 CORE91 XR77", std::numeric_limits<std::size_t>::max(), result);
+    if (result.matched) {
+        std::cout << "  match => span [" << result.index << ", " << (result.index + result.length) << "]" << std::endl;
+        if (result.groups.size() > 1 && result.groups[1].begin != std::numeric_limits<std::uint32_t>::max()) {
+            std::cout << "  capture[1] => span [" << result.groups[1].begin
+                      << ", " << result.groups[1].end << "]" << std::endl;
+        }
+    } else {
+        std::cout << "  no match" << std::endl;
+    }
+    bool hasNext = false;
+    regexpModule.Test(pattern, "NODE32 CORE91 XR77", hasNext);
+    std::cout << "  test() => " << (hasNext ? "next" : "none")
+              << " lastIndex=" << regexpModule.LastIndex(pattern) << std::endl;
+    std::string replaced;
+    regexpModule.Replace(pattern, "NODE32 CORE91 XR77", "X", replaced, false);
+    std::cout << "  replace => \"" << replaced << "\"" << std::endl;
+
+    spectre::es2025::RegExpModule::Handle split = 0;
+    if (regexpModule.Compile("\\s+", "", split) == spectre::StatusCode::Ok) {
+        std::vector<std::string> tokens;
+        regexpModule.Split(split, "alpha beta   gamma", 0, tokens);
+        std::cout << "  split => ";
+        for (std::size_t i = 0; i < tokens.size(); ++i) {
+            std::cout << (i == 0 ? "" : " | ") << tokens[i];
+        }
+        std::cout << std::endl;
+        regexpModule.Destroy(split);
+    }
+    regexpModule.Destroy(pattern);
+}
+
+void DemonstrateTypedArrayModule(spectre::es2025::TypedArrayModule &typedArrayModule) {
+    using Module = spectre::es2025::TypedArrayModule;
+    std::cout << "\nTypedArray staging demo" << std::endl;
+    Module::Handle buffer = 0;
+    if (typedArrayModule.Create(Module::ElementType::Float32, 16, "audio.frame", buffer) != spectre::StatusCode::Ok) {
+        std::cout << "  float32 buffer unavailable" << std::endl;
+        return;
+    }
+    typedArrayModule.Fill(buffer, 0.0);
+    typedArrayModule.Set(buffer, 0, 0.25);
+    typedArrayModule.Set(buffer, 1, 0.5);
+    typedArrayModule.CopyWithin(buffer, 8, 0, 8);
+    std::vector<double> samples;
+    typedArrayModule.ToVector(buffer, samples);
+    std::cout << "  samples =>";
+    for (std::size_t i = 0; i < samples.size() && i < 8; ++i) {
+        std::cout << ' ' << samples[i];
+    }
+    std::cout << std::endl;
+
+    Module::Handle view = 0;
+    if (typedArrayModule.Subarray(buffer, 8, 12, "audio.view", view) == spectre::StatusCode::Ok) {
+        typedArrayModule.Set(view, 2, -0.5);
+        double value = 0.0;
+        typedArrayModule.Get(buffer, 10, value);
+        std::cout << "  shared view value => " << value << std::endl;
+        typedArrayModule.Destroy(view);
+    }
+
+    Module::Handle big = 0;
+    if (typedArrayModule.Create(Module::ElementType::BigInt64, 4, "id.buffer", big) == spectre::StatusCode::Ok) {
+        typedArrayModule.FillBigInt(big, 42);
+        std::vector<std::int64_t> ids;
+        typedArrayModule.ToBigIntVector(big, ids);
+        std::cout << "  bigint ids =>";
+        for (auto id : ids) {
+            std::cout << ' ' << id;
+        }
+        std::cout << std::endl;
+        typedArrayModule.Destroy(big);
+    }
+
+    const auto &metrics = typedArrayModule.GetMetrics();
+    std::cout << "  views=" << metrics.activeViews
+              << " reads=" << metrics.readOps
+              << " writes=" << metrics.writeOps
+              << " subarrays=" << metrics.subarrayOps << std::endl;
+    typedArrayModule.Destroy(buffer);
 }
 
 void ShowcaseSymbols(spectre::es2025::SymbolModule &symbolModule) {
@@ -428,11 +521,12 @@ void ShowcaseSymbols(spectre::es2025::SymbolModule &symbolModule) {
 
     const auto &metrics = symbolModule.GetMetrics();
     std::cout << "  metrics => live=" << metrics.liveSymbols
-            << " local=" << metrics.localSymbols
-            << " global=" << metrics.globalSymbols
-            << " hits=" << metrics.registryHits
-            << " misses=" << metrics.registryMisses << std::endl;
+              << " local=" << metrics.localSymbols
+              << " global=" << metrics.globalSymbols
+              << " hits=" << metrics.registryHits
+              << " misses=" << metrics.registryMisses << std::endl;
 }
+
 void DemonstrateMathModule(spectre::es2025::MathModule &mathModule) {
     std::cout << "\nDemonstrating math module" << std::endl;
     auto originalFlags = std::cout.flags();
@@ -1161,6 +1255,19 @@ int main() {
         return 1;
     }
 
+    auto *regexpModulePtr = environment.FindModule("RegExp");
+    auto *regexpModule = dynamic_cast<es2025::RegExpModule *>(regexpModulePtr);
+    if (!regexpModule) {
+        std::cerr << "RegExp module unavailable" << std::endl;
+        return 1;
+    }
+
+    auto *typedArrayModulePtr = environment.FindModule("TypedArray");
+    auto *typedArrayModule = dynamic_cast<es2025::TypedArrayModule *>(typedArrayModulePtr);
+    if (!typedArrayModule) {
+        std::cerr << "TypedArray module unavailable" << std::endl;
+        return 1;
+    }
     auto *symbolModulePtr = environment.FindModule("Symbol");
     auto *symbolModule = dynamic_cast<es2025::SymbolModule *>(symbolModulePtr);
     if (!symbolModule) {
@@ -1198,9 +1305,11 @@ int main() {
     DemonstrateGeneratorModule(*generatorModule, *iteratorModule);
     DemonstrateArrayModule(*arrayModule);
     DemonstrateArrayBufferModule(*arrayBufferModule);
+    DemonstrateTypedArrayModule(*typedArrayModule);
     DemonstrateAtomicsModule(*atomicsModule);
     DemonstrateBooleanModule(*booleanModule);
     DemonstrateStringModule(*stringModule);
+    DemonstrateRegExpModule(*regexpModule);
     DemonstrateMathModule(*mathModule);
     DemonstrateDateModule(*dateModule);
     DemonstrateNumberModule(*numberModule);
@@ -1251,3 +1360,21 @@ int main() {
     std::cout << "\nES2025 production scaffold ready" << std::endl;
     return 0;
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
