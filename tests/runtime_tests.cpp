@@ -24,6 +24,7 @@
 #include "spectre/es2025/modules/error_module.h"
 #include "spectre/es2025/modules/function_module.h"
 #include "spectre/es2025/modules/async_function_module.h"
+#include "spectre/es2025/modules/async_iterator_module.h"
 #include "spectre/es2025/modules/atomics_module.h"
 #include "spectre/es2025/modules/boolean_module.h"
 #include "spectre/es2025/modules/array_module.h"
@@ -951,6 +952,180 @@ namespace {
         results.clear();
         ok &= ExpectTrue(singleInvoked, "Single callback invoked");
         ok &= ExpectTrue(module->PendingCount() == 0, "Pending queue drained after overflow test");
+
+        return ok;
+    }
+
+    bool AsyncIteratorModuleCoordinatesValues() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        bool ok = ExpectTrue(runtime != nullptr, "Runtime created");
+        if (!runtime) {
+            return false;
+        }
+        auto &environment = runtime->EsEnvironment();
+        auto *module = dynamic_cast<spectre::es2025::AsyncIteratorModule *>(environment.FindModule("AsyncIterator"));
+        ok &= ExpectTrue(module != nullptr, "AsyncIterator module available");
+        if (!module) {
+            return false;
+        }
+
+        spectre::es2025::AsyncIteratorModule::StreamConfig config{};
+        config.queueCapacity = 8;
+        config.waiterCapacity = 8;
+        config.label = "spectre.stream.primary";
+        spectre::es2025::AsyncIteratorModule::Handle handle = 0;
+        ok &= ExpectStatus(module->CreateStream(config, handle), StatusCode::Ok, "Create stream");
+        ok &= ExpectTrue(handle != spectre::es2025::AsyncIteratorModule::kInvalidHandle, "Stream handle valid");
+
+        spectre::es2025::AsyncIteratorModule::EnqueueOptions first{};
+        first.value = spectre::es2025::Value::Number(42.0);
+        first.hasValue = true;
+        first.done = false;
+        first.diagnostics = "payload";
+        ok &= ExpectStatus(module->Enqueue(handle, first), StatusCode::Ok, "Enqueue first value");
+
+        spectre::es2025::AsyncIteratorModule::Request immediate;
+        ok &= ExpectStatus(module->RequestNext(handle, immediate), StatusCode::Ok, "Request next immediate");
+        ok &= ExpectTrue(immediate.immediate, "Immediate request satisfied");
+        ok &= ExpectTrue(immediate.result.hasValue, "Immediate result has value");
+        ok &= ExpectTrue(!immediate.result.done, "Immediate result not done");
+        ok &= ExpectTrue(immediate.result.value.AsNumber() == 42.0, "Immediate value matches");
+        ok &= ExpectTrue(immediate.result.diagnostics == "payload", "Diagnostics propagated");
+
+        std::vector<spectre::es2025::AsyncIteratorModule::Result> drained;
+        module->DrainSettled(drained);
+        ok &= ExpectTrue(!drained.empty(), "Drained immediate result");
+        if (!drained.empty()) {
+            ok &= ExpectTrue(drained.front().ticket == immediate.result.ticket, "Ticket preserved");
+            ok &= ExpectTrue(drained.front().hasValue, "Drained retains value flag");
+        }
+
+        spectre::es2025::AsyncIteratorModule::Request pending;
+        ok &= ExpectStatus(module->RequestNext(handle, pending), StatusCode::Ok, "Request pending ticket");
+        ok &= ExpectTrue(!pending.immediate, "Pending request enqueued");
+        ok &= ExpectTrue(pending.ticket != spectre::es2025::AsyncIteratorModule::kInvalidTicket, "Pending ticket valid");
+
+        spectre::es2025::AsyncIteratorModule::EnqueueOptions second{};
+        second.value = spectre::es2025::Value::String("next");
+        second.hasValue = true;
+        second.done = false;
+        ok &= ExpectStatus(module->Enqueue(handle, second), StatusCode::Ok, "Enqueue second value");
+
+        module->DrainSettled(drained);
+        ok &= ExpectTrue(drained.size() == 1, "Second drain produces single result");
+        if (!drained.empty()) {
+            ok &= ExpectTrue(drained.back().ticket == pending.ticket, "Pending ticket fulfilled");
+            ok &= ExpectTrue(drained.back().value.AsString() == "next", "Second result payload");
+            ok &= ExpectTrue(!drained.back().done, "Second result not done");
+        }
+
+        ok &= ExpectStatus(module->SignalComplete(handle, "closed"), StatusCode::Ok, "Signal completion");
+
+        spectre::es2025::AsyncIteratorModule::Request finalRequest;
+        ok &= ExpectStatus(module->RequestNext(handle, finalRequest), StatusCode::Ok, "Request final");
+        ok &= ExpectTrue(finalRequest.immediate, "Final immediate completion");
+        ok &= ExpectTrue(finalRequest.result.done, "Final result done");
+        ok &= ExpectTrue(!finalRequest.result.hasValue, "Final result empty");
+        ok &= ExpectTrue(finalRequest.result.streamState == spectre::es2025::AsyncIteratorModule::StreamState::Completed,
+                        "Stream state completed");
+
+        module->DrainSettled(drained);
+        ok &= ExpectTrue(!drained.empty(), "Completion drained");
+
+        spectre::es2025::AsyncIteratorModule::Request postComplete;
+        ok &= ExpectStatus(module->RequestNext(handle, postComplete), StatusCode::Ok, "Request after completion");
+        ok &= ExpectTrue(postComplete.immediate, "Post completion immediate");
+        ok &= ExpectTrue(postComplete.result.done, "Post completion done");
+        ok &= ExpectTrue(!postComplete.result.hasValue, "Post completion empty");
+
+        const auto &metrics = module->GetMetrics();
+        ok &= ExpectTrue(metrics.valuesQueued >= 2, "Metrics queued values tracked");
+        ok &= ExpectTrue(metrics.valuesDelivered >= 2, "Metrics delivered values tracked");
+        ok &= ExpectTrue(metrics.completionsDelivered >= 1, "Metrics completions tracked");
+        ok &= ExpectTrue(module->ActiveStreams() == 1, "Active stream count");
+
+        ok &= ExpectTrue(module->DestroyStream(handle), "Destroy stream");
+        ok &= ExpectTrue(module->ActiveStreams() == 0, "Active streams zero after destroy");
+
+        return ok;
+    }
+
+    bool AsyncIteratorModuleHandlesFailuresAndCancellation() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        bool ok = ExpectTrue(runtime != nullptr, "Runtime created");
+        if (!runtime) {
+            return false;
+        }
+        auto &environment = runtime->EsEnvironment();
+        auto *module = dynamic_cast<spectre::es2025::AsyncIteratorModule *>(environment.FindModule("AsyncIterator"));
+        ok &= ExpectTrue(module != nullptr, "AsyncIterator module available");
+        if (!module) {
+            return false;
+        }
+
+        spectre::es2025::AsyncIteratorModule::StreamConfig config{};
+        config.queueCapacity = 4;
+        config.waiterCapacity = 4;
+        config.label = "spectre.fail";
+        spectre::es2025::AsyncIteratorModule::Handle handle = 0;
+        ok &= ExpectStatus(module->CreateStream(config, handle), StatusCode::Ok, "Create fail stream");
+
+        spectre::es2025::AsyncIteratorModule::Request firstWaiter;
+        ok &= ExpectStatus(module->RequestNext(handle, firstWaiter), StatusCode::Ok, "First waiter");
+        ok &= ExpectTrue(!firstWaiter.immediate, "First request pending");
+
+        spectre::es2025::AsyncIteratorModule::Request secondWaiter;
+        ok &= ExpectStatus(module->RequestNext(handle, secondWaiter), StatusCode::Ok, "Second waiter");
+        ok &= ExpectTrue(!secondWaiter.immediate, "Second request pending");
+
+        ok &= ExpectStatus(module->Fail(handle, "boom"), StatusCode::Ok, "Fail stream");
+
+        std::vector<spectre::es2025::AsyncIteratorModule::Result> drained;
+        module->DrainSettled(drained);
+        ok &= ExpectTrue(drained.size() == 2, "Failure resolves waiters");
+        for (const auto &result: drained) {
+            ok &= ExpectTrue(result.status == StatusCode::InvalidArgument, "Failure status propagated");
+            ok &= ExpectTrue(result.done, "Failure marks done");
+            ok &= ExpectTrue(result.streamState == spectre::es2025::AsyncIteratorModule::StreamState::Failed,
+                            "Stream state failed");
+            ok &= ExpectTrue(result.diagnostics == "boom", "Failure diagnostics captured");
+        }
+
+        spectre::es2025::AsyncIteratorModule::Request postFailure;
+        ok &= ExpectStatus(module->RequestNext(handle, postFailure), StatusCode::Ok, "Post failure request");
+        ok &= ExpectTrue(postFailure.immediate, "Post failure immediate");
+        ok &= ExpectTrue(postFailure.result.status == StatusCode::InvalidArgument, "Post failure status");
+        ok &= ExpectTrue(postFailure.result.streamState == spectre::es2025::AsyncIteratorModule::StreamState::Failed,
+                        "Post failure state failed");
+
+        ok &= ExpectTrue(module->DestroyStream(handle), "Destroy failed stream");
+
+        spectre::es2025::AsyncIteratorModule::StreamConfig cancelConfig{};
+        cancelConfig.queueCapacity = 4;
+        cancelConfig.waiterCapacity = 2;
+        cancelConfig.label = "spectre.cancel";
+        spectre::es2025::AsyncIteratorModule::Handle cancelHandle = 0;
+        ok &= ExpectStatus(module->CreateStream(cancelConfig, cancelHandle), StatusCode::Ok, "Create cancel stream");
+
+        spectre::es2025::AsyncIteratorModule::Request cancelWaiter;
+        ok &= ExpectStatus(module->RequestNext(cancelHandle, cancelWaiter), StatusCode::Ok, "Pending cancel waiter");
+        ok &= ExpectTrue(!cancelWaiter.immediate, "Cancel waiter pending");
+
+        ok &= ExpectTrue(module->DestroyStream(cancelHandle), "Destroy cancel stream");
+
+        module->DrainSettled(drained);
+        ok &= ExpectTrue(!drained.empty(), "Cancellation produced result");
+        bool sawCancelled = false;
+        for (const auto &result: drained) {
+            if (result.ticket == cancelWaiter.ticket) {
+                sawCancelled = true;
+                ok &= ExpectTrue(result.status == StatusCode::InvalidArgument, "Cancellation status invalid argument");
+                ok &= ExpectTrue(result.streamState == spectre::es2025::AsyncIteratorModule::StreamState::Cancelled,
+                                "Cancellation stream state");
+                ok &= ExpectTrue(result.diagnostics == "cancelled", "Cancellation diagnostics");
+            }
+        }
+        ok &= ExpectTrue(sawCancelled, "Cancellation ticket found");
 
         return ok;
     }
@@ -2542,6 +2717,8 @@ int main() {
         {"ErrorModuleSupportsCustomTypes", ErrorModuleSupportsCustomTypes},
         {"AsyncFunctionModuleDispatchesJobs", AsyncFunctionModuleDispatchesJobs},
         {"AsyncFunctionModuleHandlesDelaysAndCancellation", AsyncFunctionModuleHandlesDelaysAndCancellation},
+        {"AsyncIteratorModuleCoordinatesValues", AsyncIteratorModuleCoordinatesValues},
+        {"AsyncIteratorModuleHandlesFailuresAndCancellation", AsyncIteratorModuleHandlesFailuresAndCancellation},
         {"PromiseModuleResolvesAndChains", PromiseModuleResolvesAndChains},
         {"PromiseModuleHandlesRejectionFlow", PromiseModuleHandlesRejectionFlow},
         {"FunctionModuleRegistersAndInvokes", FunctionModuleRegistersAndInvokes},

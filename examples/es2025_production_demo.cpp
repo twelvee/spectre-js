@@ -21,6 +21,7 @@
 #include "spectre/es2025/modules/error_module.h"
 #include "spectre/es2025/modules/function_module.h"
 #include "spectre/es2025/modules/async_function_module.h"
+#include "spectre/es2025/modules/async_iterator_module.h"
 #include "spectre/es2025/modules/promise_module.h"
 #include "spectre/es2025/modules/atomics_module.h"
 #include "spectre/es2025/modules/boolean_module.h"
@@ -269,6 +270,110 @@ namespace {
         std::cout << "  pending after ticks: " << asyncModule.PendingCount() << std::endl;
         std::cout << "  fast resolved=" << (fastResolved ? "yes" : "no")
                 << " delayed resolved=" << (delayedResolved ? "yes" : "no") << std::endl;
+    }
+
+    void DemonstrateAsyncIteratorModule(spectre::es2025::AsyncIteratorModule &iteratorModule,
+                                        spectre::SpectreRuntime &runtime) {
+        std::cout << "\nAsyncIterator host streams" << std::endl;
+        spectre::es2025::AsyncIteratorModule::StreamConfig config{};
+        config.queueCapacity = 6;
+        config.waiterCapacity = 4;
+        config.label = "demo.iter";
+        spectre::es2025::AsyncIteratorModule::Handle handle = 0;
+        if (iteratorModule.CreateStream(config, handle) != spectre::StatusCode::Ok) {
+            std::cout << "  stream unavailable" << std::endl;
+            return;
+        }
+        std::cout << "  stream handle => " << handle << std::endl;
+        std::cout << "  active streams => " << iteratorModule.ActiveStreams() << std::endl;
+
+        auto dumpResults = [](const std::vector<spectre::es2025::AsyncIteratorModule::Result> &results) {
+            for (const auto &entry: results) {
+                std::cout << "    ticket " << entry.ticket
+                        << " state=" << static_cast<int>(entry.streamState)
+                        << " status=" << static_cast<int>(entry.status)
+                        << " value=" << (entry.hasValue ? entry.value.ToString() : "<void>")
+                        << " done=" << (entry.done ? "true" : "false")
+                        << " label=" << entry.requestLabel.data()
+                        << " frame=" << entry.satisfiedFrame
+                        << " diag=" << entry.diagnostics << std::endl;
+            }
+        };
+
+        std::vector<spectre::es2025::AsyncIteratorModule::Result> drained;
+
+        spectre::es2025::AsyncIteratorModule::EnqueueOptions warmup{};
+        warmup.value = spectre::es2025::Value::String("warmup");
+        warmup.hasValue = true;
+        warmup.done = false;
+        warmup.diagnostics = "preloaded";
+        if (iteratorModule.Enqueue(handle, warmup) != spectre::StatusCode::Ok) {
+            std::cout << "  failed to preload warmup" << std::endl;
+        }
+
+        spectre::es2025::AsyncIteratorModule::Request immediate;
+        if (iteratorModule.RequestNext(handle, immediate) == spectre::StatusCode::Ok && immediate.immediate) {
+            std::cout << "  immediate => value=" << immediate.result.value.ToString()
+                    << " diagnostics=" << immediate.result.diagnostics << std::endl;
+        }
+
+        iteratorModule.DrainSettled(drained);
+        dumpResults(drained);
+        drained.clear();
+
+        spectre::es2025::AsyncIteratorModule::Request pending;
+        if (iteratorModule.RequestNext(handle, pending) == spectre::StatusCode::Ok) {
+            std::cout << "  pending ticket => " << pending.ticket << std::endl;
+        } else {
+            std::cout << "  failed to enqueue waiter" << std::endl;
+        }
+
+        auto lastTick = runtime.LastTick();
+        runtime.Tick({0.008, lastTick.frameIndex + 1});
+
+        spectre::es2025::AsyncIteratorModule::EnqueueOptions payload{};
+        payload.value = spectre::es2025::Value::Number(7.5);
+        payload.hasValue = true;
+        payload.done = false;
+        payload.diagnostics = "payload";
+        if (iteratorModule.Enqueue(handle, payload) != spectre::StatusCode::Ok) {
+            std::cout << "  failed to enqueue payload" << std::endl;
+        }
+
+        iteratorModule.DrainSettled(drained);
+        dumpResults(drained);
+        drained.clear();
+
+        if (iteratorModule.SignalComplete(handle, "completed") != spectre::StatusCode::Ok) {
+            std::cout << "  completion signal failed" << std::endl;
+        }
+        spectre::es2025::AsyncIteratorModule::Request completion;
+        if (iteratorModule.RequestNext(handle, completion) == spectre::StatusCode::Ok && completion.immediate) {
+            std::cout << "  completion => done=" << (completion.result.done ? "true" : "false")
+                    << " diagnostics=" << completion.result.diagnostics << std::endl;
+        }
+
+        iteratorModule.DrainSettled(drained);
+        dumpResults(drained);
+        drained.clear();
+
+        spectre::es2025::AsyncIteratorModule::Request postComplete;
+        if (iteratorModule.RequestNext(handle, postComplete) == spectre::StatusCode::Ok && postComplete.immediate) {
+            std::cout << "  subsequent => done=" << (postComplete.result.done ? "true" : "false") << std::endl;
+        }
+
+        const auto &metrics = iteratorModule.GetMetrics();
+        std::cout << "  metrics queued=" << metrics.valuesQueued
+                << " delivered=" << metrics.valuesDelivered
+                << " completed=" << metrics.completionsDelivered
+                << " waiters=" << metrics.waitersEnqueued
+                << " served=" << metrics.waitersServed << std::endl;
+
+        if (!iteratorModule.DestroyStream(handle)) {
+            std::cout << "  failed to destroy stream" << std::endl;
+        } else {
+            std::cout << "  active streams => " << iteratorModule.ActiveStreams() << std::endl;
+        }
     }
 
     void DemonstratePromiseModule(spectre::es2025::PromiseModule &promiseModule,
@@ -1437,6 +1542,13 @@ int main() {
         return 1;
     }
 
+    auto *asyncIteratorModulePtr = environment.FindModule("AsyncIterator");
+    auto *asyncIteratorModule = dynamic_cast<es2025::AsyncIteratorModule *>(asyncIteratorModulePtr);
+    if (!asyncIteratorModule) {
+        std::cerr << "AsyncIterator module unavailable" << std::endl;
+        return 1;
+    }
+
     auto *promiseModulePtr = environment.FindModule("Promise");
     auto *promiseModule = dynamic_cast<es2025::PromiseModule *>(promiseModulePtr);
     if (!promiseModule) {
@@ -1562,6 +1674,7 @@ int main() {
     DemonstrateIteratorModule(*iteratorModule);
     DemonstrateGeneratorModule(*generatorModule, *iteratorModule);
     DemonstrateAsyncFunctionModule(*asyncFunctionModule, *runtime);
+    DemonstrateAsyncIteratorModule(*asyncIteratorModule, *runtime);
     DemonstratePromiseModule(*promiseModule, *runtime);
     DemonstrateArrayModule(*arrayModule);
     DemonstrateArrayBufferModule(*arrayBufferModule);
