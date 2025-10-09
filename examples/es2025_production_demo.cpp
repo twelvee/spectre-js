@@ -29,6 +29,7 @@
 #include "spectre/es2025/modules/boolean_module.h"
 #include "spectre/es2025/modules/array_module.h"
 #include "spectre/es2025/modules/array_buffer_module.h"
+#include "spectre/es2025/modules/data_view_module.h"
 #include "spectre/es2025/modules/shared_array_buffer_module.h"
 #include "spectre/es2025/modules/iterator_module.h"
 #include "spectre/es2025/modules/generator_module.h"
@@ -613,6 +614,89 @@ namespace {
                 << " pool-reuses=" << metrics.poolReuses
                 << " detaches=" << metrics.detaches
                 << " peak-bytes=" << metrics.peakBytesInUse << std::endl;
+    }
+
+    void DemonstrateDataViewModule(spectre::es2025::DataViewModule &dataViewModule,
+                                   spectre::es2025::ArrayBufferModule &bufferModule) {
+        std::cout << "\nDataView precision demo" << std::endl;
+        spectre::es2025::ArrayBufferModule::Handle backing = 0;
+        if (bufferModule.Create("dataview.backing", 64, backing) != spectre::StatusCode::Ok) {
+            std::cout << "  backing allocation failed" << std::endl;
+            return;
+        }
+        auto cleanup = [&]() {
+            if (backing != 0) {
+                bufferModule.Destroy(backing);
+                backing = 0;
+            }
+        };
+
+        spectre::es2025::DataViewModule::Handle view = 0;
+        if (dataViewModule.Create(backing, 16, 32, "dataview.payload", view) != spectre::StatusCode::Ok) {
+            std::cout << "  view creation failed" << std::endl;
+            cleanup();
+            return;
+        }
+
+        dataViewModule.SetUint32(view, 0, 0x11223344u, true);
+        dataViewModule.SetUint32(view, 4, 0x8899aabbu, false);
+        dataViewModule.SetFloat64(view, 8, 42.75, true);
+        dataViewModule.SetBigUint64(view, 16, 0x0102030405060708ull, false);
+        dataViewModule.SetInt8(view, 24, -12);
+
+        std::uint32_t little = 0;
+        std::uint32_t big = 0;
+        double energy = 0.0;
+        std::uint64_t signature = 0;
+        std::int8_t bias = 0;
+        dataViewModule.GetUint32(view, 0, true, little);
+        dataViewModule.GetUint32(view, 4, false, big);
+        dataViewModule.GetFloat64(view, 8, true, energy);
+        dataViewModule.GetBigUint64(view, 16, false, signature);
+        dataViewModule.GetInt8(view, 24, bias);
+
+        std::ostringstream scalarLine;
+        scalarLine << std::hex << std::setfill('0');
+        scalarLine << "  little=0x" << std::setw(8) << little
+                   << " big=0x" << std::setw(8) << big
+                   << " signature=0x" << std::setw(16) << signature;
+        std::cout << scalarLine.str() << std::endl;
+
+        std::ostringstream floatLine;
+        floatLine.setf(std::ios::fixed);
+        floatLine << std::setprecision(2);
+        floatLine << "  energy=" << energy << " bias=" << static_cast<int>(bias);
+        std::cout << floatLine.str() << std::endl;
+
+        std::array<std::uint8_t, 16> bytes{};
+        if (bufferModule.CopyOut(backing, 16, bytes.data(), bytes.size()) == spectre::StatusCode::Ok) {
+            std::ostringstream raw;
+            raw << std::hex << std::setfill('0') << "  raw:";
+            for (auto byte: bytes) {
+                raw << ' ' << std::setw(2) << static_cast<int>(byte);
+            }
+            std::cout << raw.str() << std::endl;
+        }
+
+        spectre::es2025::DataViewModule::Snapshot snapshot{};
+        if (dataViewModule.Describe(view, snapshot) == spectre::StatusCode::Ok) {
+            std::cout << "  snapshot offset=" << snapshot.byteOffset
+                      << " length=" << snapshot.byteLength
+                      << " attached=" << (snapshot.attached ? "true" : "false") << std::endl;
+        }
+
+        dataViewModule.Detach(view);
+        std::uint8_t guard = 0;
+        auto status = dataViewModule.GetUint8(view, 0, guard);
+        std::cout << "  post-detach read => "
+                  << (status == spectre::StatusCode::Ok ? "ok" : "blocked") << std::endl;
+
+        dataViewModule.Destroy(view);
+        const auto &metrics = dataViewModule.GetMetrics();
+        std::cout << "  DataView metrics => reads=" << metrics.readOps
+                  << " writes=" << metrics.writeOps
+                  << " hot=" << metrics.hotViews << std::endl;
+        cleanup();
     }
     void DemonstrateAtomicsModule(spectre::es2025::AtomicsModule &atomicsModule) {
         std::cout << "\nAtomics lane demo" << std::endl;
@@ -2034,6 +2118,12 @@ int main() {
         std::cerr << "ArrayBuffer module unavailable" << std::endl;
         return 1;
     }
+    auto *dataViewModulePtr = environment.FindModule("DataView");
+    auto *dataViewModule = dynamic_cast<es2025::DataViewModule *>(dataViewModulePtr);
+    if (!dataViewModule) {
+        std::cerr << "DataView module unavailable" << std::endl;
+        return 1;
+    }
     auto *sharedArrayModulePtr = environment.FindModule("SharedArrayBuffer");
     auto *sharedArrayModule = dynamic_cast<es2025::SharedArrayBufferModule *>(sharedArrayModulePtr);
     if (!sharedArrayModule) {
@@ -2170,6 +2260,7 @@ int main() {
     DemonstratePromiseModule(*promiseModule, *runtime);
     DemonstrateArrayModule(*arrayModule);
     DemonstrateArrayBufferModule(*arrayBufferModule);
+    DemonstrateDataViewModule(*dataViewModule, *arrayBufferModule);
     DemonstrateTypedArrayModule(*typedArrayModule);
     DemonstrateStructuredClone(*structuredCloneModule, *arrayBufferModule, *sharedArrayModule, *typedArrayModule);
     DemonstrateJsonModule(*jsonModule);

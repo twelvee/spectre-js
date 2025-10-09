@@ -13,8 +13,10 @@
 
 namespace spectre::es2025 {
     class TypedArrayModule;
+    class DataViewModule;
     class ArrayBufferModule final : public Module {
         friend class TypedArrayModule;
+        friend class DataViewModule;
     public:
         using Handle = std::uint64_t;
 

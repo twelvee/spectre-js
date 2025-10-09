@@ -39,6 +39,7 @@
 #include "spectre/es2025/modules/date_module.h"
 #include "spectre/es2025/modules/string_module.h"
 #include "spectre/es2025/modules/regexp_module.h"
+#include "spectre/es2025/modules/data_view_module.h"
 #include "spectre/es2025/modules/typed_array_module.h"
 #include "spectre/es2025/modules/structured_clone_module.h"
 #include "spectre/es2025/modules/json_module.h"
@@ -558,6 +559,115 @@ namespace {
         ok &= ExpectStatus(module->Destroy(sub), StatusCode::Ok, "Destroy subarray");
         ok &= ExpectStatus(module->Destroy(big), StatusCode::Ok, "Destroy BigInt array");
         ok &= ExpectStatus(module->Destroy(handle), StatusCode::Ok, "Destroy primary array");
+        return ok;
+    }
+
+    bool DataViewModuleHandlesEndianAccess() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        bool ok = ExpectTrue(runtime != nullptr, "Runtime created");
+        if (!runtime) {
+            return false;
+        }
+        auto &environment = runtime->EsEnvironment();
+        auto *bufferModule = dynamic_cast<spectre::es2025::ArrayBufferModule *>(environment.FindModule("ArrayBuffer"));
+        auto *viewModule = dynamic_cast<spectre::es2025::DataViewModule *>(environment.FindModule("DataView"));
+        ok &= ExpectTrue(bufferModule != nullptr, "ArrayBuffer module available");
+        ok &= ExpectTrue(viewModule != nullptr, "DataView module available");
+        if (!bufferModule || !viewModule) {
+            return false;
+        }
+
+        spectre::es2025::ArrayBufferModule::Handle bufferHandle = 0;
+        ok &= ExpectStatus(bufferModule->Create("dv.buffer", 64, bufferHandle), StatusCode::Ok, "Create buffer");
+        ok &= ExpectTrue(bufferHandle != 0, "Buffer handle valid");
+
+        spectre::es2025::DataViewModule::Handle viewHandle = 0;
+        ok &= ExpectStatus(viewModule->Create(bufferHandle,
+                                             0,
+                                             spectre::es2025::DataViewModule::kUseRemaining,
+                                             "dv.view",
+                                             viewHandle),
+                           StatusCode::Ok,
+                           "Create view across full buffer");
+        ok &= ExpectTrue(viewHandle != 0, "View handle valid");
+
+        ok &= ExpectStatus(viewModule->SetUint32(viewHandle, 0, 0x11223344u, true), StatusCode::Ok,
+                           "Write uint32 little-endian");
+        ok &= ExpectStatus(viewModule->SetUint32(viewHandle, 4, 0x0A0B0C0Du, false), StatusCode::Ok,
+                           "Write uint32 big-endian");
+        const double marker = 1296.125;
+        ok &= ExpectStatus(viewModule->SetFloat64(viewHandle, 8, marker, true), StatusCode::Ok,
+                           "Write float64 little-endian");
+        const std::int64_t bigSigned = -0x0102030405060708ll;
+        ok &= ExpectStatus(viewModule->SetBigInt64(viewHandle, 16, bigSigned, false), StatusCode::Ok,
+                           "Write int64 big-endian");
+        ok &= ExpectStatus(viewModule->SetUint8(viewHandle, 24, 200u), StatusCode::Ok, "Write uint8");
+        ok &= ExpectStatus(viewModule->SetInt8(viewHandle, 25, -5), StatusCode::Ok, "Write int8");
+        const std::uint64_t bigUnsigned = 0x0F0E0D0C0B0A0908ull;
+        ok &= ExpectStatus(viewModule->SetBigUint64(viewHandle, 32, bigUnsigned, true), StatusCode::Ok,
+                           "Write uint64 little-endian");
+
+        std::uint32_t leValue = 0;
+        ok &= ExpectStatus(viewModule->GetUint32(viewHandle, 0, true, leValue), StatusCode::Ok, "Read uint32 LE");
+        ok &= ExpectTrue(leValue == 0x11223344u, "LE uint32 roundtrip");
+        std::uint32_t beValue = 0;
+        ok &= ExpectStatus(viewModule->GetUint32(viewHandle, 4, false, beValue), StatusCode::Ok, "Read uint32 BE");
+        ok &= ExpectTrue(beValue == 0x0A0B0C0Du, "BE uint32 roundtrip");
+        double readFloat = 0.0;
+        ok &= ExpectStatus(viewModule->GetFloat64(viewHandle, 8, true, readFloat), StatusCode::Ok,
+                           "Read float64");
+        ok &= ExpectTrue(std::abs(readFloat - marker) < 1e-6, "Float64 roundtrip");
+        std::int64_t readBig = 0;
+        ok &= ExpectStatus(viewModule->GetBigInt64(viewHandle, 16, false, readBig), StatusCode::Ok,
+                           "Read int64 BE");
+        ok &= ExpectTrue(readBig == bigSigned, "BigInt64 roundtrip");
+        std::uint8_t readU8 = 0;
+        ok &= ExpectStatus(viewModule->GetUint8(viewHandle, 24, readU8), StatusCode::Ok, "Read uint8");
+        ok &= ExpectTrue(readU8 == 200u, "Uint8 roundtrip");
+        std::int8_t readI8 = 0;
+        ok &= ExpectStatus(viewModule->GetInt8(viewHandle, 25, readI8), StatusCode::Ok, "Read int8");
+        ok &= ExpectTrue(readI8 == -5, "Int8 roundtrip");
+        std::uint64_t readBigUnsigned = 0;
+        ok &= ExpectStatus(viewModule->GetBigUint64(viewHandle, 32, true, readBigUnsigned), StatusCode::Ok,
+                           "Read uint64 LE");
+        ok &= ExpectTrue(readBigUnsigned == bigUnsigned, "BigUint64 roundtrip");
+
+        std::uint16_t span = 0;
+        ok &= ExpectStatus(viewModule->GetUint16(viewHandle, 24, true, span), StatusCode::Ok, "Read uint16 LE");
+        const auto expectedSpan = static_cast<std::uint16_t>(readU8 |
+            (static_cast<std::uint16_t>(static_cast<std::uint8_t>(readI8)) << 8));
+        ok &= ExpectTrue(span == expectedSpan, "Uint16 combines adjacent bytes");
+
+        std::uint32_t outOfRange = 0;
+        ok &= ExpectStatus(viewModule->GetUint32(viewHandle, 61, true, outOfRange), StatusCode::InvalidArgument,
+                           "Out-of-range access rejected");
+
+        spectre::es2025::DataViewModule::Snapshot snapshot{};
+        ok &= ExpectStatus(viewModule->Describe(viewHandle, snapshot), StatusCode::Ok, "Describe view");
+        ok &= ExpectTrue(snapshot.byteOffset == 0, "Snapshot offset");
+        ok &= ExpectTrue(snapshot.byteLength == 64, "Snapshot length");
+        ok &= ExpectTrue(snapshot.bufferHandle == bufferHandle, "Snapshot buffer reference");
+        ok &= ExpectTrue(snapshot.attached, "Snapshot attached flag");
+
+        spectre::es2025::DataViewModule::Handle invalidHandle = 0;
+        ok &= ExpectStatus(viewModule->Create(bufferHandle, 60, 8, "overflow", invalidHandle),
+                           StatusCode::InvalidArgument,
+                           "Reject oversized view");
+        ok &= ExpectTrue(invalidHandle == 0, "Invalid handle remains zero");
+
+        ok &= ExpectStatus(viewModule->Detach(viewHandle), StatusCode::Ok, "Detach view");
+        ok &= ExpectStatus(viewModule->GetUint8(viewHandle, 0, readU8), StatusCode::InvalidArgument,
+                           "Detached view rejects read");
+        ok &= ExpectStatus(viewModule->Destroy(viewHandle), StatusCode::Ok, "Destroy view");
+
+        const auto &metrics = viewModule->GetMetrics();
+        ok &= ExpectTrue(metrics.createdViews >= 1, "Metrics track created views");
+        ok &= ExpectTrue(metrics.destroyedViews >= 1, "Metrics track destroyed views");
+        ok &= ExpectTrue(metrics.writeOps >= 7, "Metrics track write ops");
+        ok &= ExpectTrue(metrics.readOps >= 8, "Metrics track read ops");
+        ok &= ExpectTrue(metrics.activeViews == 0, "No active views after destroy");
+
+        ok &= ExpectStatus(bufferModule->Destroy(bufferHandle), StatusCode::Ok, "Destroy buffer");
         return ok;
     }
 
@@ -3410,6 +3520,7 @@ int main() {
         {"SymbolModuleManagesSymbols", SymbolModuleManagesSymbols},
         {"RegExpModuleCompilesAndMatches", RegExpModuleCompilesAndMatches},
         {"TypedArrayModuleCoversElementOps", TypedArrayModuleCoversElementOps},
+        {"DataViewModuleHandlesEndianAccess", DataViewModuleHandlesEndianAccess},
         {"MapModuleMaintainsOrder", MapModuleMaintainsOrder},
         {"SetModuleMaintainsUniqueness", SetModuleMaintainsUniqueness},
         {"WeakSetModuleCompactsInvalidEntries", WeakSetModuleCompactsInvalidEntries},
