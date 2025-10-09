@@ -11,6 +11,7 @@
 #include <array>
 #include <cstdint>
 
+#include <numeric>
 #include "spectre/config.h"
 #include "spectre/runtime.h"
 #include "spectre/status.h"
@@ -28,11 +29,13 @@
 #include "spectre/es2025/modules/boolean_module.h"
 #include "spectre/es2025/modules/array_module.h"
 #include "spectre/es2025/modules/array_buffer_module.h"
+#include "spectre/es2025/modules/shared_array_buffer_module.h"
 #include "spectre/es2025/modules/iterator_module.h"
 #include "spectre/es2025/modules/generator_module.h"
 #include "spectre/es2025/modules/string_module.h"
 #include "spectre/es2025/modules/regexp_module.h"
 #include "spectre/es2025/modules/typed_array_module.h"
+#include "spectre/es2025/modules/structured_clone_module.h"
 #include "spectre/es2025/modules/symbol_module.h"
 #include "spectre/es2025/modules/math_module.h"
 #include "spectre/es2025/modules/number_module.h"
@@ -829,6 +832,158 @@ void DemonstrateTypedArrayModule(spectre::es2025::TypedArrayModule &typedArrayMo
               << " writes=" << metrics.writeOps
               << " subarrays=" << metrics.subarrayOps << std::endl;
     typedArrayModule.Destroy(buffer);
+}
+
+void DemonstrateStructuredClone(spectre::es2025::StructuredCloneModule &cloneModule,
+                                spectre::es2025::ArrayBufferModule &arrayModule,
+                                spectre::es2025::SharedArrayBufferModule &sharedModule,
+                                spectre::es2025::TypedArrayModule &typedArrayModule) {
+    std::cout << "\nStructured clone showcase" << std::endl;
+
+    spectre::es2025::TypedArrayModule::Handle typedHandle = 0;
+    if (typedArrayModule.Create(spectre::es2025::TypedArrayModule::ElementType::Float32,
+                                4, "clone.view", typedHandle) != spectre::StatusCode::Ok) {
+        std::cout << "  typed array unavailable" << std::endl;
+        return;
+    }
+    typedArrayModule.Set(typedHandle, 0, 2.5);
+    typedArrayModule.Set(typedHandle, 1, -6.0);
+    typedArrayModule.Set(typedHandle, 2, 9.25);
+    typedArrayModule.Set(typedHandle, 3, 12.5);
+
+    spectre::es2025::SharedArrayBufferModule::Handle sharedHandle = 0;
+    if (sharedModule.CreateResizable("clone.shared", 96, 160, sharedHandle) != spectre::StatusCode::Ok) {
+        std::cout << "  shared buffer unavailable" << std::endl;
+        typedArrayModule.Destroy(typedHandle);
+        return;
+    }
+    std::vector<std::uint8_t> sharedBytes(96);
+    for (std::size_t i = 0; i < sharedBytes.size(); ++i) {
+        sharedBytes[i] = static_cast<std::uint8_t>((i * 7) & 0xffu);
+    }
+    sharedModule.CopyIn(sharedHandle, 0, sharedBytes.data(), sharedBytes.size());
+
+    spectre::es2025::ArrayBufferModule::Handle bufferHandle = 0;
+    if (arrayModule.Create("clone.buffer", 48, bufferHandle) != spectre::StatusCode::Ok) {
+        std::cout << "  array buffer unavailable" << std::endl;
+        sharedModule.Destroy(sharedHandle);
+        typedArrayModule.Destroy(typedHandle);
+        return;
+    }
+    std::vector<std::uint8_t> bufferBytes(48);
+    for (std::size_t i = 0; i < bufferBytes.size(); ++i) {
+        bufferBytes[i] = static_cast<std::uint8_t>(0x40u + i);
+    }
+    arrayModule.CopyIn(bufferHandle, 0, bufferBytes.data(), bufferBytes.size());
+
+    spectre::es2025::StructuredCloneModule::Node root;
+    root.kind = spectre::es2025::StructuredCloneModule::Node::Kind::Object;
+    root.objectProperties.emplace_back("kind", spectre::es2025::StructuredCloneModule::Node::FromString("demo"));
+
+    spectre::es2025::StructuredCloneModule::Node bufferNode;
+    bufferNode.kind = spectre::es2025::StructuredCloneModule::Node::Kind::ArrayBuffer;
+    bufferNode.arrayBuffer = bufferHandle;
+    bufferNode.transfer = true;
+    bufferNode.label = "clone.buffer";
+    root.objectProperties.emplace_back("buffer", bufferNode);
+
+    spectre::es2025::StructuredCloneModule::Node sharedNode;
+    sharedNode.kind = spectre::es2025::StructuredCloneModule::Node::Kind::SharedArrayBuffer;
+    sharedNode.sharedBuffer = sharedHandle;
+    sharedNode.label = "clone.shared";
+    root.objectProperties.emplace_back("shared", sharedNode);
+
+    spectre::es2025::StructuredCloneModule::Node typedNode;
+    typedNode.kind = spectre::es2025::StructuredCloneModule::Node::Kind::TypedArray;
+    typedNode.typedArray.handle = typedHandle;
+    typedNode.typedArray.elementType = spectre::es2025::TypedArrayModule::ElementType::Float32;
+    typedNode.typedArray.length = 4;
+    typedNode.typedArray.byteOffset = 0;
+    typedNode.typedArray.copyBuffer = true;
+    typedNode.typedArray.label = "clone.view";
+    root.objectProperties.emplace_back("vector", typedNode);
+
+    spectre::es2025::StructuredCloneModule::CloneOptions options;
+    options.enableTransfer = true;
+    options.shareSharedBuffers = true;
+    options.copyTypedArrayBuffer = true;
+    options.transferList.push_back(bufferHandle);
+
+    spectre::es2025::StructuredCloneModule::Node cloned;
+    if (cloneModule.Clone(root, cloned, options) != spectre::StatusCode::Ok) {
+        std::cout << "  clone failed" << std::endl;
+        typedArrayModule.Destroy(typedHandle);
+        sharedModule.Destroy(sharedHandle);
+        arrayModule.Destroy(bufferHandle);
+        return;
+    }
+
+    auto findProperty = [](const spectre::es2025::StructuredCloneModule::Node &node,
+                           const std::string &key) -> const spectre::es2025::StructuredCloneModule::Node * {
+        for (const auto &prop: node.objectProperties) {
+            if (prop.first == key) {
+                return &prop.second;
+            }
+        }
+        return nullptr;
+    };
+
+    if (const auto *cloneBuffer = findProperty(cloned, "buffer")) {
+        std::vector<std::uint8_t> verify(bufferBytes.size());
+        arrayModule.CopyOut(cloneBuffer->arrayBuffer, 0, verify.data(), verify.size());
+        std::cout << "  cloned buffer checksum => "
+                << std::accumulate(verify.begin(), verify.end(), 0u) << std::endl;
+        std::cout << "  transfer detached => " << (arrayModule.Detached(bufferHandle) ? "true" : "false") << std::endl;
+        arrayModule.Destroy(cloneBuffer->arrayBuffer);
+    }
+
+    if (const auto *cloneShared = findProperty(cloned, "shared")) {
+        auto originalCount = sharedModule.RefCount(sharedHandle);
+        auto cloneCount = sharedModule.RefCount(cloneShared->sharedBuffer);
+        std::cout << "  shared refcount => " << originalCount << " (clone=" << cloneCount << ")" << std::endl;
+        sharedModule.Destroy(cloneShared->sharedBuffer);
+    }
+
+    if (const auto *cloneTyped = findProperty(cloned, "vector")) {
+        std::vector<double> values;
+        typedArrayModule.ToVector(cloneTyped->typedArray.handle, values);
+        if (!values.empty()) {
+            std::cout << "  cloned typed first => " << values.front() << std::endl;
+        }
+        typedArrayModule.Destroy(cloneTyped->typedArray.handle);
+    }
+
+    std::vector<std::uint8_t> blob;
+    auto serializeStatus = cloneModule.Serialize(cloned, blob);
+    if (serializeStatus == spectre::StatusCode::Ok) {
+        std::cout << "  serialized payload => " << blob.size() << " bytes" << std::endl;
+    }
+
+    spectre::es2025::StructuredCloneModule::Node restored;
+    if (serializeStatus == spectre::StatusCode::Ok &&
+        cloneModule.Deserialize(blob.data(), blob.size(), restored) == spectre::StatusCode::Ok) {
+        if (const auto *restoredBuffer = findProperty(restored, "buffer")) {
+            arrayModule.Destroy(restoredBuffer->arrayBuffer);
+        }
+        if (const auto *restoredShared = findProperty(restored, "shared")) {
+            sharedModule.Destroy(restoredShared->sharedBuffer);
+        }
+        if (const auto *restoredTyped = findProperty(restored, "vector")) {
+            typedArrayModule.Destroy(restoredTyped->typedArray.handle);
+        }
+    }
+
+    const auto &metrics = cloneModule.GetMetrics();
+    std::cout << "  metrics cloneCalls=" << metrics.cloneCalls
+            << " buffers=" << metrics.bufferCopies
+            << " shared=" << metrics.sharedShares
+            << " typed=" << metrics.typedArrayCopies
+            << " serialized=" << metrics.serializedBytes
+            << " deserialized=" << metrics.deserializedBytes << std::endl;
+
+    typedArrayModule.Destroy(typedHandle);
+    sharedModule.Destroy(sharedHandle);
+    arrayModule.Destroy(bufferHandle);
 }
 
 void ShowcaseSymbols(spectre::es2025::SymbolModule &symbolModule) {
@@ -1793,6 +1948,20 @@ int main() {
         std::cerr << "ArrayBuffer module unavailable" << std::endl;
         return 1;
     }
+    auto *sharedArrayModulePtr = environment.FindModule("SharedArrayBuffer");
+    auto *sharedArrayModule = dynamic_cast<es2025::SharedArrayBufferModule *>(sharedArrayModulePtr);
+    if (!sharedArrayModule) {
+        std::cerr << "SharedArrayBuffer module unavailable" << std::endl;
+        return 1;
+    }
+
+    auto *structuredCloneModulePtr = environment.FindModule("StructuredClone");
+    auto *structuredCloneModule = dynamic_cast<es2025::StructuredCloneModule *>(structuredCloneModulePtr);
+    if (!structuredCloneModule) {
+        std::cerr << "StructuredClone module unavailable" << std::endl;
+        return 1;
+    }
+
     auto *arrayModulePtr = environment.FindModule("Array");
     auto *arrayModule = dynamic_cast<es2025::ArrayModule *>(arrayModulePtr);
     if (!arrayModule) {
@@ -1910,6 +2079,7 @@ int main() {
     DemonstrateArrayModule(*arrayModule);
     DemonstrateArrayBufferModule(*arrayBufferModule);
     DemonstrateTypedArrayModule(*typedArrayModule);
+    DemonstrateStructuredClone(*structuredCloneModule, *arrayBufferModule, *sharedArrayModule, *typedArrayModule);
     DemonstrateAtomicsModule(*atomicsModule);
     DemonstrateBooleanModule(*booleanModule);
     DemonstrateStringModule(*stringModule);

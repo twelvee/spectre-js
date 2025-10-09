@@ -1,4 +1,4 @@
-﻿#include <iostream>
+#include <iostream>
 #include <limits>
 #include <string>
 #include <algorithm>
@@ -29,6 +29,7 @@
 #include "spectre/es2025/modules/boolean_module.h"
 #include "spectre/es2025/modules/array_module.h"
 #include "spectre/es2025/modules/array_buffer_module.h"
+#include "spectre/es2025/modules/shared_array_buffer_module.h"
 #include "spectre/es2025/modules/iterator_module.h"
 #include "spectre/es2025/modules/generator_module.h"
 #include "spectre/es2025/modules/promise_module.h"
@@ -39,6 +40,7 @@
 #include "spectre/es2025/modules/string_module.h"
 #include "spectre/es2025/modules/regexp_module.h"
 #include "spectre/es2025/modules/typed_array_module.h"
+#include "spectre/es2025/modules/structured_clone_module.h"
 #include "spectre/es2025/modules/symbol_module.h"
 #include "spectre/es2025/modules/reflect_module.h"
 #include "spectre/es2025/modules/weak_ref_module.h"
@@ -1007,7 +1009,8 @@ namespace {
         spectre::es2025::AsyncIteratorModule::Request pending;
         ok &= ExpectStatus(module->RequestNext(handle, pending), StatusCode::Ok, "Request pending ticket");
         ok &= ExpectTrue(!pending.immediate, "Pending request enqueued");
-        ok &= ExpectTrue(pending.ticket != spectre::es2025::AsyncIteratorModule::kInvalidTicket, "Pending ticket valid");
+        ok &= ExpectTrue(pending.ticket != spectre::es2025::AsyncIteratorModule::kInvalidTicket,
+                         "Pending ticket valid");
 
         spectre::es2025::AsyncIteratorModule::EnqueueOptions second{};
         second.value = spectre::es2025::Value::String("next");
@@ -1030,8 +1033,9 @@ namespace {
         ok &= ExpectTrue(finalRequest.immediate, "Final immediate completion");
         ok &= ExpectTrue(finalRequest.result.done, "Final result done");
         ok &= ExpectTrue(!finalRequest.result.hasValue, "Final result empty");
-        ok &= ExpectTrue(finalRequest.result.streamState == spectre::es2025::AsyncIteratorModule::StreamState::Completed,
-                        "Stream state completed");
+        ok &= ExpectTrue(
+            finalRequest.result.streamState == spectre::es2025::AsyncIteratorModule::StreamState::Completed,
+            "Stream state completed");
 
         module->DrainSettled(drained);
         ok &= ExpectTrue(!drained.empty(), "Completion drained");
@@ -1091,7 +1095,7 @@ namespace {
             ok &= ExpectTrue(result.status == StatusCode::InvalidArgument, "Failure status propagated");
             ok &= ExpectTrue(result.done, "Failure marks done");
             ok &= ExpectTrue(result.streamState == spectre::es2025::AsyncIteratorModule::StreamState::Failed,
-                            "Stream state failed");
+                             "Stream state failed");
             ok &= ExpectTrue(result.diagnostics == "boom", "Failure diagnostics captured");
         }
 
@@ -1100,7 +1104,7 @@ namespace {
         ok &= ExpectTrue(postFailure.immediate, "Post failure immediate");
         ok &= ExpectTrue(postFailure.result.status == StatusCode::InvalidArgument, "Post failure status");
         ok &= ExpectTrue(postFailure.result.streamState == spectre::es2025::AsyncIteratorModule::StreamState::Failed,
-                        "Post failure state failed");
+                         "Post failure state failed");
 
         ok &= ExpectTrue(module->DestroyStream(handle), "Destroy failed stream");
 
@@ -1125,7 +1129,7 @@ namespace {
                 sawCancelled = true;
                 ok &= ExpectTrue(result.status == StatusCode::InvalidArgument, "Cancellation status invalid argument");
                 ok &= ExpectTrue(result.streamState == spectre::es2025::AsyncIteratorModule::StreamState::Cancelled,
-                                "Cancellation stream state");
+                                 "Cancellation stream state");
                 ok &= ExpectTrue(result.diagnostics == "cancelled", "Cancellation diagnostics");
             }
         }
@@ -1160,7 +1164,7 @@ namespace {
         ok &= ExpectStatus(module->Then(root, derived, reaction), StatusCode::Ok, "Register then handler");
 
         ok &= ExpectStatus(module->Resolve(root, spectre::es2025::Value::Number(5.0), "initial"), StatusCode::Ok,
-                          "Resolve root");
+                           "Resolve root");
         ok &= ExpectTrue(module->PendingMicrotasks() == 1, "Microtask queued");
 
         runtime->Tick({0.0, 0});
@@ -1230,10 +1234,10 @@ namespace {
         rejectOptions.userData = &rejectPayload;
         rejectOptions.label = "recover";
         ok &= ExpectStatus(module->Then(propagated, recovered, rejectOptions), StatusCode::Ok,
-                          "Chain rejection handler");
+                           "Chain rejection handler");
 
         ok &= ExpectStatus(module->Reject(root, "boom", spectre::es2025::Value::String("root")), StatusCode::Ok,
-                          "Reject root");
+                           "Reject root");
 
         runtime->Tick({0.0, 0});
 
@@ -1375,7 +1379,8 @@ namespace {
 
         spectre::es2025::IteratorModule::Handle rangeHandle = 0;
         spectre::es2025::IteratorModule::RangeConfig rangeConfig{0, 5, 1, false};
-        ok &= ExpectStatus(iteratorModule->CreateRange(rangeConfig, rangeHandle), StatusCode::Ok, "Create range iterator");
+        ok &= ExpectStatus(iteratorModule->CreateRange(rangeConfig, rangeHandle), StatusCode::Ok,
+                           "Create range iterator");
         std::array<spectre::es2025::IteratorModule::Result, 8> rangeBuffer{};
         auto produced = iteratorModule->Drain(rangeHandle, rangeBuffer);
         ok &= ExpectTrue(produced == 6, "Range drain produced values plus sentinel");
@@ -1470,7 +1475,8 @@ namespace {
         customConfig.state = &custom;
 
         spectre::es2025::IteratorModule::Handle customHandle = 0;
-        ok &= ExpectStatus(iteratorModule->CreateCustom(customConfig, customHandle), StatusCode::Ok, "Create custom iterator");
+        ok &= ExpectStatus(iteratorModule->CreateCustom(customConfig, customHandle), StatusCode::Ok,
+                           "Create custom iterator");
         iteratorModule->Reset(customHandle);
         auto customEntry = iteratorModule->Next(customHandle);
         int customCount = 0;
@@ -1507,7 +1513,13 @@ namespace {
         struct GeneratorState {
             std::size_t index;
             std::array<spectre::es2025::Value, 3> values;
-        } state{0, {spectre::es2025::Value::Number(1.0), spectre::es2025::Value::Number(2.0), spectre::es2025::Value::String("done")}};
+        } state{
+                    0,
+                    {
+                        spectre::es2025::Value::Number(1.0), spectre::es2025::Value::Number(2.0),
+                        spectre::es2025::Value::String("done")
+                    }
+                };
 
         auto resetFn = [](void *raw) {
             auto *ptr = static_cast<GeneratorState *>(raw);
@@ -1579,7 +1591,8 @@ namespace {
         generatorModule->Reset(handle);
 
         std::uint32_t iteratorHandle = 0;
-        ok &= ExpectStatus(generatorModule->CreateIteratorBridge(handle, *iteratorModule, iteratorHandle), StatusCode::Ok, "Create iterator bridge");
+        ok &= ExpectStatus(generatorModule->CreateIteratorBridge(handle, *iteratorModule, iteratorHandle),
+                           StatusCode::Ok, "Create iterator bridge");
         std::array<spectre::es2025::IteratorModule::Result, 8> bridgeBuffer{};
         auto bridgeProduced = iteratorModule->Drain(iteratorHandle, bridgeBuffer);
         ok &= ExpectTrue(bridgeProduced == 3, "Bridge produced generator values");
@@ -1797,9 +1810,7 @@ namespace {
     }
 
 
-
-
-        bool ArrayBufferModuleAllocatesAndPools() {
+    bool ArrayBufferModuleAllocatesAndPools() {
         auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
         auto &environment = runtime->EsEnvironment();
         auto *bufferModule = dynamic_cast<spectre::es2025::ArrayBufferModule *>(environment.FindModule("ArrayBuffer"));
@@ -1867,14 +1878,14 @@ namespace {
         ok &= ExpectStatus(bufferModule->Create("demo.reuse", 256, reuseHandle), StatusCode::Ok, "Reuse allocation");
         const auto metricsAfterReuse = bufferModule->GetMetrics();
         ok &= ExpectTrue(metricsAfterReuse.poolReuses >= metricsBeforeDestroy.poolReuses + 1,
-                        "Pool reuse accounted");
+                         "Pool reuse accounted");
         ok &= ExpectTrue(metricsAfterReuse.bytesInUse >= 256, "Bytes in use tracked");
         ok &= ExpectStatus(bufferModule->Destroy(reuseHandle), StatusCode::Ok, "Destroy reused buffer");
         ok &= ExpectStatus(bufferModule->Destroy(cloneHandle), StatusCode::Ok, "Destroy clone");
         return ok;
     }
 
-bool ArrayBufferModuleResizesAndDetaches() {
+    bool ArrayBufferModuleResizesAndDetaches() {
         auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
         auto &environment = runtime->EsEnvironment();
         auto *bufferModule = dynamic_cast<spectre::es2025::ArrayBufferModule *>(environment.FindModule("ArrayBuffer"));
@@ -1888,7 +1899,8 @@ bool ArrayBufferModuleResizesAndDetaches() {
         for (std::size_t i = 0; i < basePattern.size(); ++i) {
             basePattern[i] = static_cast<std::uint8_t>((i * 3) & 0xFF);
         }
-        ok &= ExpectStatus(bufferModule->CopyIn(sourceHandle, 0, basePattern.data(), basePattern.size()), StatusCode::Ok,
+        ok &= ExpectStatus(bufferModule->CopyIn(sourceHandle, 0, basePattern.data(), basePattern.size()),
+                           StatusCode::Ok,
                            "Seed pattern");
         ok &= ExpectStatus(bufferModule->Resize(sourceHandle, 512, true), StatusCode::Ok, "Grow preserving data");
         ok &= ExpectTrue(bufferModule->ByteLength(sourceHandle) == 512, "Growth length reported");
@@ -1907,7 +1919,8 @@ bool ArrayBufferModuleResizesAndDetaches() {
         ok &= ExpectStatus(bufferModule->Resize(sourceHandle, 64, false), StatusCode::Ok, "Shrink without preserve");
         ok &= ExpectTrue(bufferModule->ByteLength(sourceHandle) == 64, "Shrink length reported");
         std::array<std::uint8_t, 64> shrinkCheck{};
-        ok &= ExpectStatus(bufferModule->CopyOut(sourceHandle, 0, shrinkCheck.data(), shrinkCheck.size()), StatusCode::Ok,
+        ok &= ExpectStatus(bufferModule->CopyOut(sourceHandle, 0, shrinkCheck.data(), shrinkCheck.size()),
+                           StatusCode::Ok,
                            "CopyOut shrunk buffer");
         bool shrinkCleared = std::all_of(shrinkCheck.begin(), shrinkCheck.end(), [](std::uint8_t value) {
             return value == 0;
@@ -2599,21 +2612,25 @@ bool ArrayBufferModuleResizesAndDetaches() {
         descriptor.enumerable = true;
         descriptor.configurable = false;
         descriptor.writable = false;
-        ok &= ExpectStatus(reflectModule->DefineProperty(target, "answer", descriptor), StatusCode::Ok, "Define property");
+        ok &= ExpectStatus(reflectModule->DefineProperty(target, "answer", descriptor), StatusCode::Ok,
+                           "Define property");
         spectre::es2025::ObjectModule::Value value;
         ok &= ExpectStatus(reflectModule->Get(target, "answer", value), StatusCode::Ok, "Get property");
         ok &= ExpectTrue(value.IsInt() && value.Int() == 42, "Reflect.get returns expected value");
         ok &= ExpectTrue(reflectModule->Has(target, "answer"), "Reflect.has returns true");
         spectre::es2025::ObjectModule::PropertyDescriptor readBack{};
-        ok &= ExpectStatus(reflectModule->GetOwnPropertyDescriptor(target, "answer", readBack), StatusCode::Ok, "Descriptor fetch");
-        ok &= ExpectTrue(readBack.enumerable && !readBack.configurable && !readBack.writable, "Descriptor flags preserved");
+        ok &= ExpectStatus(reflectModule->GetOwnPropertyDescriptor(target, "answer", readBack), StatusCode::Ok,
+                           "Descriptor fetch");
+        ok &= ExpectTrue(readBack.enumerable && !readBack.configurable && !readBack.writable,
+                         "Descriptor flags preserved");
         std::vector<std::string> keys;
         ok &= ExpectStatus(reflectModule->OwnKeys(target, keys), StatusCode::Ok, "Own keys");
         ok &= ExpectTrue(keys.size() == 1 && keys.front() == "answer", "Own keys contains property");
         auto prototype = reflectModule->GetPrototypeOf(target);
         ok &= ExpectTrue(prototype == 0, "Prototype initially null");
         spectre::es2025::ObjectModule::Handle protoHandle = 0;
-        ok &= ExpectStatus(objectModule->Create("test.reflect.proto", 0, protoHandle), StatusCode::Ok, "Create prototype");
+        ok &= ExpectStatus(objectModule->Create("test.reflect.proto", 0, protoHandle), StatusCode::Ok,
+                           "Create prototype");
         ok &= ExpectStatus(reflectModule->SetPrototypeOf(target, protoHandle), StatusCode::Ok, "Set prototype");
         ok &= ExpectTrue(reflectModule->GetPrototypeOf(target) == protoHandle, "Prototype updated");
         bool deleted = true;
@@ -2628,7 +2645,8 @@ bool ArrayBufferModuleResizesAndDetaches() {
         descriptor2.enumerable = true;
         descriptor2.configurable = true;
         descriptor2.writable = true;
-        ok &= ExpectStatus(reflectModule->DefineProperty(target, "newProp", descriptor2), StatusCode::InvalidArgument, "Cannot add property to non-extensible object");
+        ok &= ExpectStatus(reflectModule->DefineProperty(target, "newProp", descriptor2), StatusCode::InvalidArgument,
+                           "Cannot add property to non-extensible object");
         const auto &metrics = reflectModule->GetMetrics();
         ok &= ExpectTrue(metrics.getOps >= 1 && metrics.defineOps >= 1, "Reflect metrics updated");
         return ok;
@@ -2686,6 +2704,7 @@ bool ArrayBufferModuleResizesAndDetaches() {
         ok &= ExpectStatus(weakRefModule->Destroy(refA), StatusCode::Ok, "Destroy refA");
         return ok;
     }
+
     bool WeakMapModulePurgesInvalidKeys() {
         auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
         bool ok = ExpectTrue(runtime != nullptr, "Runtime created");
@@ -2743,24 +2762,26 @@ bool ArrayBufferModuleResizesAndDetaches() {
         if (!symbolModule) {
             return false;
         }
-        std::array<std::pair<spectre::es2025::SymbolModule::WellKnown, const char *>, 16> wellKnown = {{
-            {spectre::es2025::SymbolModule::WellKnown::AsyncIterator, "Symbol.asyncIterator"},
-            {spectre::es2025::SymbolModule::WellKnown::HasInstance, "Symbol.hasInstance"},
-            {spectre::es2025::SymbolModule::WellKnown::IsConcatSpreadable, "Symbol.isConcatSpreadable"},
-            {spectre::es2025::SymbolModule::WellKnown::Iterator, "Symbol.iterator"},
-            {spectre::es2025::SymbolModule::WellKnown::Match, "Symbol.match"},
-            {spectre::es2025::SymbolModule::WellKnown::MatchAll, "Symbol.matchAll"},
-            {spectre::es2025::SymbolModule::WellKnown::Replace, "Symbol.replace"},
-            {spectre::es2025::SymbolModule::WellKnown::Search, "Symbol.search"},
-            {spectre::es2025::SymbolModule::WellKnown::Species, "Symbol.species"},
-            {spectre::es2025::SymbolModule::WellKnown::Split, "Symbol.split"},
-            {spectre::es2025::SymbolModule::WellKnown::ToPrimitive, "Symbol.toPrimitive"},
-            {spectre::es2025::SymbolModule::WellKnown::ToStringTag, "Symbol.toStringTag"},
-            {spectre::es2025::SymbolModule::WellKnown::Unscopables, "Symbol.unscopables"},
-            {spectre::es2025::SymbolModule::WellKnown::Dispose, "Symbol.dispose"},
-            {spectre::es2025::SymbolModule::WellKnown::AsyncDispose, "Symbol.asyncDispose"},
-            {spectre::es2025::SymbolModule::WellKnown::Metadata, "Symbol.metadata"}
-        }};
+        std::array<std::pair<spectre::es2025::SymbolModule::WellKnown, const char *>, 16> wellKnown = {
+            {
+                {spectre::es2025::SymbolModule::WellKnown::AsyncIterator, "Symbol.asyncIterator"},
+                {spectre::es2025::SymbolModule::WellKnown::HasInstance, "Symbol.hasInstance"},
+                {spectre::es2025::SymbolModule::WellKnown::IsConcatSpreadable, "Symbol.isConcatSpreadable"},
+                {spectre::es2025::SymbolModule::WellKnown::Iterator, "Symbol.iterator"},
+                {spectre::es2025::SymbolModule::WellKnown::Match, "Symbol.match"},
+                {spectre::es2025::SymbolModule::WellKnown::MatchAll, "Symbol.matchAll"},
+                {spectre::es2025::SymbolModule::WellKnown::Replace, "Symbol.replace"},
+                {spectre::es2025::SymbolModule::WellKnown::Search, "Symbol.search"},
+                {spectre::es2025::SymbolModule::WellKnown::Species, "Symbol.species"},
+                {spectre::es2025::SymbolModule::WellKnown::Split, "Symbol.split"},
+                {spectre::es2025::SymbolModule::WellKnown::ToPrimitive, "Symbol.toPrimitive"},
+                {spectre::es2025::SymbolModule::WellKnown::ToStringTag, "Symbol.toStringTag"},
+                {spectre::es2025::SymbolModule::WellKnown::Unscopables, "Symbol.unscopables"},
+                {spectre::es2025::SymbolModule::WellKnown::Dispose, "Symbol.dispose"},
+                {spectre::es2025::SymbolModule::WellKnown::AsyncDispose, "Symbol.asyncDispose"},
+                {spectre::es2025::SymbolModule::WellKnown::Metadata, "Symbol.metadata"}
+            }
+        };
         std::vector<spectre::es2025::SymbolModule::Handle> handles;
         handles.reserve(wellKnown.size());
         for (const auto &entry: wellKnown) {
@@ -2784,22 +2805,27 @@ bool ArrayBufferModuleResizesAndDetaches() {
         ok &= ExpectTrue(uniqueHandle != 0, "Unique handle valid");
         ok &= ExpectTrue(symbolModule->Description(uniqueHandle).empty(), "Unique description empty");
         spectre::es2025::SymbolModule::Handle globalHandle = 0;
-        ok &= ExpectStatus(symbolModule->CreateGlobal("spectre.global", globalHandle), StatusCode::Ok, "Create global symbol");
+        ok &= ExpectStatus(symbolModule->CreateGlobal("spectre.global", globalHandle), StatusCode::Ok,
+                           "Create global symbol");
         ok &= ExpectTrue(symbolModule->IsGlobal(globalHandle), "Global symbol flag");
         std::string registryKey;
         ok &= ExpectStatus(symbolModule->KeyFor(globalHandle, registryKey), StatusCode::Ok, "Registry lookup");
         ok &= ExpectTrue(registryKey == "spectre.global", "Registry key value");
         spectre::es2025::SymbolModule::Handle repeatHandle = 0;
-        ok &= ExpectStatus(symbolModule->CreateGlobal("spectre.global", repeatHandle), StatusCode::Ok, "Repeat global symbol");
+        ok &= ExpectStatus(symbolModule->CreateGlobal("spectre.global", repeatHandle), StatusCode::Ok,
+                           "Repeat global symbol");
         ok &= ExpectTrue(repeatHandle == globalHandle, "Global reuse");
         const auto &metrics = symbolModule->GetMetrics();
         ok &= ExpectTrue(metrics.globalSymbols >= 1, "Metrics global symbols");
-        ok &= ExpectTrue(metrics.localSymbols >= static_cast<std::uint64_t>(handles.size() + 2), "Metrics local symbols");
+        ok &= ExpectTrue(metrics.localSymbols >= static_cast<std::uint64_t>(handles.size() + 2),
+                         "Metrics local symbols");
         ok &= ExpectTrue(metrics.registryHits >= 1, "Metrics registry hits");
         ok &= ExpectTrue(metrics.registryMisses >= 1, "Metrics registry misses");
-        ok &= ExpectTrue(metrics.wellKnownSymbols == static_cast<std::uint64_t>(wellKnown.size()), "Metrics well-known symbols");
+        ok &= ExpectTrue(metrics.wellKnownSymbols == static_cast<std::uint64_t>(wellKnown.size()),
+                         "Metrics well-known symbols");
         return ok;
     }
+
     bool ShadowRealmModuleCreatesIsolatedRealms() {
         auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
         bool ok = ExpectTrue(runtime != nullptr, "Runtime created");
@@ -2909,8 +2935,313 @@ bool ArrayBufferModuleResizesAndDetaches() {
         return ok;
     }
 
-    struct TestCase {
+    bool StructuredCloneModuleClonesComplexGraphs() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        auto &environment = runtime->EsEnvironment();
+        auto *cloneModule = dynamic_cast<spectre::es2025::StructuredCloneModule *>(environment.FindModule(
+            "StructuredClone"));
+        auto *arrayModule = dynamic_cast<spectre::es2025::ArrayBufferModule *>(environment.FindModule("ArrayBuffer"));
+        auto *sharedModule = dynamic_cast<spectre::es2025::SharedArrayBufferModule *>(environment.FindModule(
+            "SharedArrayBuffer"));
+        auto *typedModule = dynamic_cast<spectre::es2025::TypedArrayModule *>(environment.FindModule("TypedArray"));
+        bool ok = ExpectTrue(cloneModule != nullptr, "StructuredClone module available");
+        ok &= ExpectTrue(arrayModule != nullptr, "ArrayBuffer module required");
+        ok &= ExpectTrue(sharedModule != nullptr, "SharedArrayBuffer module required");
+        ok &= ExpectTrue(typedModule != nullptr, "TypedArray module required");
+        if (!cloneModule || !arrayModule || !sharedModule || !typedModule) {
+            return false;
+        }
 
+        spectre::es2025::ArrayBufferModule::Handle plainHandle = 0;
+        ok &= ExpectStatus(arrayModule->Create("clone.source", 64, plainHandle), StatusCode::Ok, "Create array buffer");
+        std::vector<std::uint8_t> pattern(64);
+        for (std::size_t i = 0; i < pattern.size(); ++i) {
+            pattern[i] = static_cast<std::uint8_t>((i * 5) & 0xFFu);
+        }
+        ok &= ExpectStatus(arrayModule->CopyIn(plainHandle, 0, pattern.data(), pattern.size()), StatusCode::Ok,
+                           "Populate buffer");
+
+        spectre::es2025::SharedArrayBufferModule::Handle sharedHandle = 0;
+        ok &= ExpectStatus(sharedModule->CreateResizable("clone.shared.source", 96, 160, sharedHandle), StatusCode::Ok,
+                           "Create shared buffer");
+        std::vector<std::uint8_t> sharedPattern(96);
+        for (std::size_t i = 0; i < sharedPattern.size(); ++i) {
+            sharedPattern[i] = static_cast<std::uint8_t>((i * 3) & 0xFFu);
+        }
+        ok &= ExpectStatus(sharedModule->CopyIn(sharedHandle, 0, sharedPattern.data(), sharedPattern.size()),
+                           StatusCode::Ok,
+                           "Populate shared buffer");
+
+        spectre::es2025::TypedArrayModule::Handle typedHandle = 0;
+        ok &= ExpectStatus(typedModule->Create(spectre::es2025::TypedArrayModule::ElementType::Float32,
+                                               4,
+                                               "clone.typed.source",
+                                               typedHandle),
+                           StatusCode::Ok,
+                           "Create typed array");
+        ok &= ExpectStatus(typedModule->Set(typedHandle, 0, 4.5), StatusCode::Ok, "Set typed value 0");
+        ok &= ExpectStatus(typedModule->Set(typedHandle, 1, -7.25), StatusCode::Ok, "Set typed value 1");
+        ok &= ExpectStatus(typedModule->Set(typedHandle, 2, 13.0), StatusCode::Ok, "Set typed value 2");
+        ok &= ExpectStatus(typedModule->Set(typedHandle, 3, 2.0), StatusCode::Ok, "Set typed value 3");
+
+        spectre::es2025::StructuredCloneModule::Node root;
+        root.kind = spectre::es2025::StructuredCloneModule::Node::Kind::Object;
+        root.label = "root";
+        root.objectProperties.emplace_back(
+            "title", spectre::es2025::StructuredCloneModule::Node::FromString("structured"));
+        root.objectProperties.emplace_back("flag", spectre::es2025::StructuredCloneModule::Node::FromBoolean(true));
+
+        spectre::es2025::StructuredCloneModule::Node list;
+        list.kind = spectre::es2025::StructuredCloneModule::Node::Kind::Array;
+        list.arrayItems.push_back(spectre::es2025::StructuredCloneModule::Node::FromNumber(42.0));
+        list.arrayItems.push_back(spectre::es2025::StructuredCloneModule::Node::FromString("payload"));
+        root.objectProperties.emplace_back("list", list);
+
+        spectre::es2025::StructuredCloneModule::Node mapNode;
+        mapNode.kind = spectre::es2025::StructuredCloneModule::Node::Kind::Map;
+        mapNode.mapEntries.emplace_back(
+            spectre::es2025::StructuredCloneModule::Node::FromString("alpha"),
+            spectre::es2025::StructuredCloneModule::Node::FromNumber(1.5));
+        mapNode.mapEntries.emplace_back(
+            spectre::es2025::StructuredCloneModule::Node::FromString("beta"),
+            spectre::es2025::StructuredCloneModule::Node::FromBoolean(false));
+        root.objectProperties.emplace_back("lookup", mapNode);
+
+        spectre::es2025::StructuredCloneModule::Node setNode;
+        setNode.kind = spectre::es2025::StructuredCloneModule::Node::Kind::Set;
+        setNode.setEntries.push_back(spectre::es2025::StructuredCloneModule::Node::FromNumber(3.14));
+        setNode.setEntries.push_back(spectre::es2025::StructuredCloneModule::Node::FromString("omega"));
+        root.objectProperties.emplace_back("bag", setNode);
+
+        spectre::es2025::StructuredCloneModule::Node bufferNode;
+        bufferNode.kind = spectre::es2025::StructuredCloneModule::Node::Kind::ArrayBuffer;
+        bufferNode.arrayBuffer = plainHandle;
+        bufferNode.label = "clone.buffer";
+        bufferNode.transfer = true;
+        root.objectProperties.emplace_back("buffer", bufferNode);
+
+        spectre::es2025::StructuredCloneModule::Node sharedNode;
+        sharedNode.kind = spectre::es2025::StructuredCloneModule::Node::Kind::SharedArrayBuffer;
+        sharedNode.sharedBuffer = sharedHandle;
+        sharedNode.label = "clone.shared";
+        root.objectProperties.emplace_back("shared", sharedNode);
+
+        spectre::es2025::StructuredCloneModule::Node typedNode;
+        typedNode.kind = spectre::es2025::StructuredCloneModule::Node::Kind::TypedArray;
+        typedNode.typedArray.handle = typedHandle;
+        typedNode.typedArray.elementType = spectre::es2025::TypedArrayModule::ElementType::Float32;
+        typedNode.typedArray.length = 4;
+        typedNode.typedArray.byteOffset = 0;
+        typedNode.typedArray.copyBuffer = true;
+        typedNode.typedArray.label = "clone.typed";
+        root.objectProperties.emplace_back("vector", typedNode);
+
+        spectre::es2025::StructuredCloneModule::CloneOptions options;
+        options.enableTransfer = true;
+        options.shareSharedBuffers = true;
+        options.copyTypedArrayBuffer = true;
+        options.transferList.push_back(plainHandle);
+
+        spectre::es2025::StructuredCloneModule::Node cloned;
+        ok &= ExpectStatus(cloneModule->Clone(root, cloned, options), StatusCode::Ok, "Clone structured node");
+        ok &= ExpectTrue(cloned.kind == spectre::es2025::StructuredCloneModule::Node::Kind::Object,
+                         "Clone root object");
+
+        auto findProperty = [](const spectre::es2025::StructuredCloneModule::Node &node,
+                               const std::string &key) -> const spectre::es2025::StructuredCloneModule::Node * {
+            for (const auto &prop: node.objectProperties) {
+                if (prop.first == key) {
+                    return &prop.second;
+                }
+            }
+            return nullptr;
+        };
+
+        const auto *clonedBuffer = findProperty(cloned, "buffer");
+        ok &= ExpectTrue(clonedBuffer != nullptr && clonedBuffer->arrayBuffer != 0, "Cloned buffer present");
+        if (clonedBuffer && clonedBuffer->arrayBuffer != 0) {
+            std::vector<std::uint8_t> verify(pattern.size());
+            ok &= ExpectStatus(arrayModule->CopyOut(clonedBuffer->arrayBuffer, 0, verify.data(), verify.size()),
+                               StatusCode::Ok,
+                               "CopyOut cloned buffer");
+            ok &= ExpectTrue(verify == pattern, "Cloned buffer bytes match");
+            ok &= ExpectTrue(arrayModule->Detached(plainHandle), "Original buffer detached");
+            arrayModule->Destroy(clonedBuffer->arrayBuffer);
+        }
+
+        const auto *clonedShared = findProperty(cloned, "shared");
+        ok &= ExpectTrue(clonedShared != nullptr && clonedShared->sharedBuffer != 0, "Cloned shared buffer present");
+        if (clonedShared && clonedShared->sharedBuffer != 0) {
+            ok &= ExpectTrue(sharedModule->RefCount(sharedHandle) > 1, "Shared buffer refcount incremented");
+            sharedModule->Destroy(clonedShared->sharedBuffer);
+        }
+
+        const auto *clonedTyped = findProperty(cloned, "vector");
+        ok &= ExpectTrue(clonedTyped != nullptr && clonedTyped->typedArray.handle != 0, "Cloned typed array present");
+        if (clonedTyped && clonedTyped->typedArray.handle != 0) {
+            std::vector<double> values;
+            ok &= ExpectStatus(typedModule->ToVector(clonedTyped->typedArray.handle, values), StatusCode::Ok,
+                               "Read cloned typed values");
+            ok &= ExpectTrue(values.size() == 4, "Cloned typed length");
+            ok &= ExpectTrue(std::abs(values[1] + 7.25) < 1e-6, "Cloned typed data preserved");
+            typedModule->Destroy(clonedTyped->typedArray.handle);
+        }
+
+        const auto &metrics = cloneModule->GetMetrics();
+        ok &= ExpectTrue(metrics.cloneCalls == 1, "Clone metrics tracked");
+        ok &= ExpectTrue(metrics.objectCopies == 1, "Object copy counted");
+        ok &= ExpectTrue(metrics.arrayCopies == 1, "Array copy counted");
+        ok &= ExpectTrue(metrics.mapCopies == 1, "Map copy counted");
+        ok &= ExpectTrue(metrics.setCopies == 1, "Set copy counted");
+        ok &= ExpectTrue(metrics.bufferCopies >= 1, "Buffer copy counted");
+        ok &= ExpectTrue(metrics.sharedShares >= 1, "Shared buffer share counted");
+        ok &= ExpectTrue(metrics.typedArrayCopies >= 1, "TypedArray copy counted");
+
+        typedModule->Destroy(typedHandle);
+        sharedModule->Destroy(sharedHandle);
+        arrayModule->Destroy(plainHandle);
+        return ok;
+    }
+
+    bool StructuredCloneModuleSerializesRoundTrips() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        auto &environment = runtime->EsEnvironment();
+        auto *cloneModule = dynamic_cast<spectre::es2025::StructuredCloneModule *>(environment.FindModule(
+            "StructuredClone"));
+        auto *arrayModule = dynamic_cast<spectre::es2025::ArrayBufferModule *>(environment.FindModule("ArrayBuffer"));
+        auto *sharedModule = dynamic_cast<spectre::es2025::SharedArrayBufferModule *>(environment.FindModule(
+            "SharedArrayBuffer"));
+        auto *typedModule = dynamic_cast<spectre::es2025::TypedArrayModule *>(environment.FindModule("TypedArray"));
+        bool ok = ExpectTrue(cloneModule != nullptr, "StructuredClone module available");
+        ok &= ExpectTrue(arrayModule != nullptr, "ArrayBuffer module present");
+        ok &= ExpectTrue(sharedModule != nullptr, "SharedArrayBuffer module present");
+        ok &= ExpectTrue(typedModule != nullptr, "TypedArray module present");
+        if (!cloneModule || !arrayModule || !sharedModule || !typedModule) {
+            return false;
+        }
+
+        spectre::es2025::ArrayBufferModule::Handle plainHandle = 0;
+        ok &= ExpectStatus(arrayModule->Create("serialize.source", 32, plainHandle), StatusCode::Ok, "Create buffer");
+        std::array<std::uint8_t, 32> seed{};
+        for (std::size_t i = 0; i < seed.size(); ++i) {
+            seed[i] = static_cast<std::uint8_t>((i * 11) & 0xFFu);
+        }
+        ok &= ExpectStatus(arrayModule->CopyIn(plainHandle, 0, seed.data(), seed.size()), StatusCode::Ok,
+                           "Seed buffer");
+
+        spectre::es2025::SharedArrayBufferModule::Handle sharedHandle = 0;
+        ok &= ExpectStatus(sharedModule->Create("serialize.shared", 48, sharedHandle), StatusCode::Ok,
+                           "Create shared buffer");
+        std::array<std::uint8_t, 48> sharedSeed{};
+        for (std::size_t i = 0; i < sharedSeed.size(); ++i) {
+            sharedSeed[i] = static_cast<std::uint8_t>((i * 7) & 0xFFu);
+        }
+        ok &= ExpectStatus(sharedModule->CopyIn(sharedHandle, 0, sharedSeed.data(), sharedSeed.size()), StatusCode::Ok,
+                           "Seed shared buffer");
+
+        spectre::es2025::TypedArrayModule::Handle typedHandle = 0;
+        ok &= ExpectStatus(typedModule->Create(spectre::es2025::TypedArrayModule::ElementType::Float32,
+                                               3,
+                                               "serialize.typed",
+                                               typedHandle),
+                           StatusCode::Ok,
+                           "Create typed array");
+        ok &= ExpectStatus(typedModule->Set(typedHandle, 0, 1.25), StatusCode::Ok, "Seed typed 0");
+        ok &= ExpectStatus(typedModule->Set(typedHandle, 1, -2.5), StatusCode::Ok, "Seed typed 1");
+        ok &= ExpectStatus(typedModule->Set(typedHandle, 2, 9.75), StatusCode::Ok, "Seed typed 2");
+
+        spectre::es2025::StructuredCloneModule::Node root;
+        root.kind = spectre::es2025::StructuredCloneModule::Node::Kind::Object;
+        root.label = "root.serialize";
+        root.objectProperties.emplace_back("kind", spectre::es2025::StructuredCloneModule::Node::FromString("sample"));
+
+        spectre::es2025::StructuredCloneModule::Node bufferNode;
+        bufferNode.kind = spectre::es2025::StructuredCloneModule::Node::Kind::ArrayBuffer;
+        bufferNode.arrayBuffer = plainHandle;
+        bufferNode.label = "serialize.buffer";
+        root.objectProperties.emplace_back("buffer", bufferNode);
+
+        spectre::es2025::StructuredCloneModule::Node sharedNode;
+        sharedNode.kind = spectre::es2025::StructuredCloneModule::Node::Kind::SharedArrayBuffer;
+        sharedNode.sharedBuffer = sharedHandle;
+        sharedNode.label = "serialize.shared";
+        root.objectProperties.emplace_back("shared", sharedNode);
+
+        spectre::es2025::StructuredCloneModule::Node typedNode;
+        typedNode.kind = spectre::es2025::StructuredCloneModule::Node::Kind::TypedArray;
+        typedNode.typedArray.handle = typedHandle;
+        typedNode.typedArray.elementType = spectre::es2025::TypedArrayModule::ElementType::Float32;
+        typedNode.typedArray.length = 3;
+        typedNode.typedArray.byteOffset = 0;
+        typedNode.typedArray.copyBuffer = true;
+        typedNode.typedArray.label = "serialize.typed";
+        root.objectProperties.emplace_back("vector", typedNode);
+
+        std::vector<std::uint8_t> blob;
+        ok &= ExpectStatus(cloneModule->Serialize(root, blob), StatusCode::Ok, "Serialize structured node");
+        ok &= ExpectTrue(!blob.empty(), "Serialized payload non-empty");
+
+        spectre::es2025::StructuredCloneModule::Node restored;
+        ok &= ExpectStatus(cloneModule->Deserialize(blob.data(), blob.size(), restored), StatusCode::Ok,
+                           "Deserialize payload");
+
+        auto findProperty = [](const spectre::es2025::StructuredCloneModule::Node &node,
+                               const std::string &key) -> const spectre::es2025::StructuredCloneModule::Node * {
+            for (const auto &prop: node.objectProperties) {
+                if (prop.first == key) {
+                    return &prop.second;
+                }
+            }
+            return nullptr;
+        };
+
+        const auto *restoredBuffer = findProperty(restored, "buffer");
+        ok &= ExpectTrue(restoredBuffer && restoredBuffer->arrayBuffer != 0, "Restored buffer present");
+        if (restoredBuffer && restoredBuffer->arrayBuffer != 0) {
+            std::array<std::uint8_t, 32> verify{};
+            ok &= ExpectStatus(arrayModule->CopyOut(restoredBuffer->arrayBuffer, 0, verify.data(), verify.size()),
+                               StatusCode::Ok,
+                               "CopyOut restored buffer");
+            ok &= ExpectTrue(std::equal(verify.begin(), verify.end(), seed.begin()), "Restored buffer bytes match");
+            arrayModule->Destroy(restoredBuffer->arrayBuffer);
+        }
+
+        const auto *restoredShared = findProperty(restored, "shared");
+        ok &= ExpectTrue(restoredShared && restoredShared->sharedBuffer != 0, "Restored shared buffer present");
+        if (restoredShared && restoredShared->sharedBuffer != 0) {
+            std::vector<std::uint8_t> restoredBytes(48);
+            ok &= ExpectStatus(
+                sharedModule->CopyOut(restoredShared->sharedBuffer, 0, restoredBytes.data(), restoredBytes.size()),
+                StatusCode::Ok,
+                "CopyOut restored shared buffer");
+            ok &= ExpectTrue(std::equal(restoredBytes.begin(), restoredBytes.end(), sharedSeed.begin()),
+                             "Restored shared bytes match");
+            sharedModule->Destroy(restoredShared->sharedBuffer);
+        }
+
+        const auto *restoredTyped = findProperty(restored, "vector");
+        ok &= ExpectTrue(restoredTyped && restoredTyped->typedArray.handle != 0, "Restored typed array present");
+        if (restoredTyped && restoredTyped->typedArray.handle != 0) {
+            std::vector<double> values;
+            ok &= ExpectStatus(typedModule->ToVector(restoredTyped->typedArray.handle, values), StatusCode::Ok,
+                               "CopyOut restored typed array");
+            ok &= ExpectTrue(values.size() == 3, "Restored typed length");
+            ok &= ExpectTrue(std::abs(values[2] - 9.75) < 1e-6, "Restored typed values correct");
+            typedModule->Destroy(restoredTyped->typedArray.handle);
+        }
+
+        const auto &metrics = cloneModule->GetMetrics();
+        ok &= ExpectTrue(metrics.serializedBytes == blob.size(), "Serialized bytes tracked");
+        ok &= ExpectTrue(metrics.deserializedBytes >= blob.size(), "Deserialized bytes tracked");
+        ok &= ExpectTrue(metrics.typedArrayCopies >= 1, "Typed clones in deserialize tracked");
+
+        typedModule->Destroy(typedHandle);
+        sharedModule->Destroy(sharedHandle);
+        arrayModule->Destroy(plainHandle);
+        return ok;
+    }
+
+    struct TestCase {
         const char *name;
 
         bool (*fn)();
@@ -2974,6 +3305,8 @@ int main() {
         {"MathModuleAcceleratesWorkloads", MathModuleAcceleratesWorkloads},
         {"ShadowRealmModuleCreatesIsolatedRealms", ShadowRealmModuleCreatesIsolatedRealms},
         {"TemporalModuleHandlesInstantsAndDurations", TemporalModuleHandlesInstantsAndDurations},
+        {"StructuredCloneModuleClonesComplexGraphs", StructuredCloneModuleClonesComplexGraphs},
+        {"StructuredCloneModuleSerializesRoundTrips", StructuredCloneModuleSerializesRoundTrips},
         {"TickAndReconfigureUpdatesState", TickAndReconfigureUpdatesState}
     };
 
@@ -2993,16 +3326,3 @@ int main() {
     std::cout << "Executed " << passed << " / " << tests.size() << " tests" << std::endl;
     return 0;
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
