@@ -41,6 +41,7 @@
 #include "spectre/es2025/modules/regexp_module.h"
 #include "spectre/es2025/modules/typed_array_module.h"
 #include "spectre/es2025/modules/structured_clone_module.h"
+#include "spectre/es2025/modules/json_module.h"
 #include "spectre/es2025/modules/symbol_module.h"
 #include "spectre/es2025/modules/reflect_module.h"
 #include "spectre/es2025/modules/weak_ref_module.h"
@@ -2935,6 +2936,119 @@ namespace {
         return ok;
     }
 
+    bool JsonModuleParsesStructuredPayload() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        auto &environment = runtime->EsEnvironment();
+        auto *jsonModule = dynamic_cast<spectre::es2025::JsonModule *>(environment.FindModule("JSON"));
+        bool ok = ExpectTrue(jsonModule != nullptr, "JSON module available");
+        if (!jsonModule) {
+            return false;
+        }
+        spectre::es2025::JsonModule::Document doc;
+        std::string diagnostics;
+        const std::string payload =
+            R"({"id":42,"flag":true,"name":"Spectre","items":[1,false,"x"],"meta":{"nested":null}})";
+        auto status = jsonModule->Parse(payload, doc, diagnostics);
+        ok &= ExpectStatus(status, StatusCode::Ok, "Parse structured payload");
+        ok &= ExpectTrue(doc.root != spectre::es2025::JsonModule::Document::kInvalidIndex, "Root assigned");
+        const auto &nodes = doc.nodes;
+        ok &= ExpectTrue(!nodes.empty(), "Nodes populated");
+        const auto &root = nodes[doc.root];
+        ok &= ExpectTrue(root.kind == spectre::es2025::JsonModule::NodeKind::Object, "Root is object");
+        ok &= ExpectTrue(root.span.count == 5, "Object property count");
+        auto findProperty = [&](std::string_view key) -> const spectre::es2025::JsonModule::Property * {
+            for (std::uint32_t i = 0; i < root.span.count; ++i) {
+                const auto &prop = doc.properties[root.span.offset + i];
+                if (doc.GetString(prop.key) == key) {
+                    return &prop;
+                }
+            }
+            return nullptr;
+        };
+        const auto *idProp = findProperty("id");
+        ok &= ExpectTrue(idProp != nullptr, "id property present");
+        if (idProp) {
+            const auto &idNode = nodes[idProp->valueIndex];
+            ok &= ExpectTrue(idNode.kind == spectre::es2025::JsonModule::NodeKind::Number, "id is number");
+            ok &= ExpectTrue(idNode.numberValue == 42.0, "id equals 42");
+        }
+        const auto *itemsProp = findProperty("items");
+        ok &= ExpectTrue(itemsProp != nullptr, "items property present");
+        if (itemsProp) {
+            const auto &itemsNode = nodes[itemsProp->valueIndex];
+            ok &= ExpectTrue(itemsNode.kind == spectre::es2025::JsonModule::NodeKind::Array, "items array");
+            ok &= ExpectTrue(itemsNode.span.count == 3, "items length 3");
+            const auto firstChild = doc.elements[itemsNode.span.offset];
+            ok &= ExpectTrue(nodes[firstChild].numberValue == 1.0, "items[0] == 1");
+            const auto secondChild = doc.elements[itemsNode.span.offset + 1];
+            ok &= ExpectTrue(nodes[secondChild].kind == spectre::es2025::JsonModule::NodeKind::Boolean &&
+                             !nodes[secondChild].boolValue, "items[1] == false");
+            const auto thirdChild = doc.elements[itemsNode.span.offset + 2];
+            ok &= ExpectTrue(nodes[thirdChild].kind == spectre::es2025::JsonModule::NodeKind::String, "items[2] string");
+            ok &= ExpectTrue(doc.GetString(nodes[thirdChild].stringRef) == "x", "items[2] value");
+        }
+        std::string compact;
+        auto stringifyStatus = jsonModule->Stringify(doc, compact);
+        ok &= ExpectStatus(stringifyStatus, StatusCode::Ok, "Stringify compact");
+        ok &= ExpectTrue(compact.find("\"name\":\"Spectre\"") != std::string::npos, "Compact contains name");
+        spectre::es2025::JsonModule::StringifyOptions prettyOptions;
+        prettyOptions.pretty = true;
+        prettyOptions.indentWidth = 4;
+        prettyOptions.trailingNewline = true;
+        std::string pretty;
+        stringifyStatus = jsonModule->Stringify(doc, pretty, &prettyOptions);
+        ok &= ExpectStatus(stringifyStatus, StatusCode::Ok, "Stringify pretty");
+        ok &= ExpectTrue(!pretty.empty() && pretty.back() == '\n', "Pretty ends newline");
+        const auto &metrics = jsonModule->GetMetrics();
+        ok &= ExpectTrue(metrics.parseCalls >= 1, "Parse metric counted");
+        ok &= ExpectTrue(metrics.stringifyCalls >= 2, "Stringify metric counted");
+        ok &= ExpectTrue(metrics.parsedNodes >= nodes.size(), "Parsed nodes tracked");
+        return ok;
+    }
+
+    bool JsonModuleHonorsOptionsAndAsciiStringify() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        auto &environment = runtime->EsEnvironment();
+        auto *jsonModule = dynamic_cast<spectre::es2025::JsonModule *>(environment.FindModule("JSON"));
+        bool ok = ExpectTrue(jsonModule != nullptr, "JSON module available");
+        if (!jsonModule) {
+            return false;
+        }
+        spectre::es2025::JsonModule::Document doc;
+        std::string diagnostics;
+        const std::string noisy = "{/*hint*/\"text\":\"caf\\u00e9\",}";
+        auto status = jsonModule->Parse(noisy, doc, diagnostics);
+        ok &= ExpectStatus(status, StatusCode::InvalidArgument, "Default options reject comments and trailing");
+        ok &= ExpectTrue(doc.root == spectre::es2025::JsonModule::Document::kInvalidIndex, "Root cleared on failure");
+        spectre::es2025::JsonModule::ParseOptions options;
+        options.allowComments = true;
+        options.allowTrailingCommas = true;
+        options.maxDepth = 32;
+        options.maxNodes = 64;
+        status = jsonModule->Parse(noisy, doc, diagnostics, &options);
+        ok &= ExpectStatus(status, StatusCode::Ok, "Parse succeeds with permissive options");
+        status = jsonModule->Parse(noisy, doc, diagnostics, &options);
+        ok &= ExpectStatus(status, StatusCode::Ok, "Parse reuses document buffers");
+        ok &= ExpectTrue(doc.root != spectre::es2025::JsonModule::Document::kInvalidIndex, "Root assigned after success");
+        ok &= ExpectTrue(doc.version >= 2, "Document version increments");
+        const auto &root = doc.nodes[doc.root];
+        const auto &prop = doc.properties[root.span.offset];
+        ok &= ExpectTrue(doc.GetString(prop.key) == "text", "Key preserved");
+        const auto &valueNode = doc.nodes[prop.valueIndex];
+        ok &= ExpectTrue(valueNode.kind == spectre::es2025::JsonModule::NodeKind::String, "Value string kind");
+        ok &= ExpectTrue(doc.GetString(valueNode.stringRef) == "caf\u00e9", "Unicode escape decoded");
+        spectre::es2025::JsonModule::StringifyOptions asciiOptions;
+        asciiOptions.asciiOnly = true;
+        std::string ascii;
+        status = jsonModule->Stringify(doc, ascii, &asciiOptions);
+        ok &= ExpectStatus(status, StatusCode::Ok, "ASCII stringify success");
+        ok &= ExpectTrue(ascii.find("\\u00E9") != std::string::npos || ascii.find("\\u00e9") != std::string::npos,
+                        "Non ASCII escaped");
+        const auto &metrics = jsonModule->GetMetrics();
+        ok &= ExpectTrue(metrics.reusedDocuments >= 1, "Document reuse counted");
+        ok &= ExpectTrue(metrics.parsedNodes >= doc.nodes.size(), "Metrics updated after permissive parse");
+        return ok;
+    }
     bool StructuredCloneModuleClonesComplexGraphs() {
         auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
         auto &environment = runtime->EsEnvironment();
@@ -3305,6 +3419,8 @@ int main() {
         {"MathModuleAcceleratesWorkloads", MathModuleAcceleratesWorkloads},
         {"ShadowRealmModuleCreatesIsolatedRealms", ShadowRealmModuleCreatesIsolatedRealms},
         {"TemporalModuleHandlesInstantsAndDurations", TemporalModuleHandlesInstantsAndDurations},
+        {"JsonModuleParsesStructuredPayload", JsonModuleParsesStructuredPayload},
+        {"JsonModuleHonorsOptionsAndAsciiStringify", JsonModuleHonorsOptionsAndAsciiStringify},
         {"StructuredCloneModuleClonesComplexGraphs", StructuredCloneModuleClonesComplexGraphs},
         {"StructuredCloneModuleSerializesRoundTrips", StructuredCloneModuleSerializesRoundTrips},
         {"TickAndReconfigureUpdatesState", TickAndReconfigureUpdatesState}
@@ -3326,3 +3442,5 @@ int main() {
     std::cout << "Executed " << passed << " / " << tests.size() << " tests" << std::endl;
     return 0;
 }
+
+

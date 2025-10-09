@@ -36,6 +36,7 @@
 #include "spectre/es2025/modules/regexp_module.h"
 #include "spectre/es2025/modules/typed_array_module.h"
 #include "spectre/es2025/modules/structured_clone_module.h"
+#include "spectre/es2025/modules/json_module.h"
 #include "spectre/es2025/modules/symbol_module.h"
 #include "spectre/es2025/modules/math_module.h"
 #include "spectre/es2025/modules/number_module.h"
@@ -1814,6 +1815,91 @@ void DemonstrateShadowRealmModule(spectre::es2025::ShadowRealmModule &shadowModu
     shadowModule.Destroy(hostRealm);
 }
 
+void DemonstrateJsonModule(spectre::es2025::JsonModule &jsonModule) {
+    std::cout << "\nJSON module showcase" << std::endl;
+
+    spectre::es2025::JsonModule::Document doc;
+    std::string diagnostics;
+    const std::string payload =
+        R"({"level":7,"label":"spectre","enabled":true,"tags":["engine","runtime","json"],"limits":{"cpu":0.5,"gpu":0.25}})";
+    auto status = jsonModule.Parse(payload, doc, diagnostics);
+    if (status != spectre::StatusCode::Ok) {
+        std::cout << "  parse failed => " << diagnostics << std::endl;
+        return;
+    }
+    const auto &root = doc.nodes[doc.root];
+    auto summarize = [&](std::uint32_t index) -> std::string {
+        const auto &node = doc.nodes[index];
+        switch (node.kind) {
+            case spectre::es2025::JsonModule::NodeKind::Null:
+                return "null";
+            case spectre::es2025::JsonModule::NodeKind::Boolean:
+                return node.boolValue ? "true" : "false";
+            case spectre::es2025::JsonModule::NodeKind::Number: {
+                std::ostringstream stream;
+                stream.setf(std::ios::fixed);
+                stream.precision(3);
+                stream << node.numberValue;
+                return stream.str();
+            }
+            case spectre::es2025::JsonModule::NodeKind::String:
+                return std::string(doc.GetString(node.stringRef));
+            case spectre::es2025::JsonModule::NodeKind::Array: {
+                std::ostringstream stream;
+                stream << "array[" << node.span.count << "]";
+                return stream.str();
+            }
+            case spectre::es2025::JsonModule::NodeKind::Object: {
+                std::ostringstream stream;
+                stream << "object{" << node.span.count << "}";
+                return stream.str();
+            }
+        }
+        return {};
+    };
+
+    if (root.kind == spectre::es2025::JsonModule::NodeKind::Object) {
+        for (std::uint32_t i = 0; i < root.span.count; ++i) {
+            const auto &prop = doc.properties[root.span.offset + i];
+            auto key = doc.GetString(prop.key);
+            auto summary = summarize(prop.valueIndex);
+            std::cout << "  " << key << " => " << summary << std::endl;
+        }
+    }
+
+    spectre::es2025::JsonModule::StringifyOptions pretty;
+    pretty.pretty = true;
+    pretty.indentWidth = 2;
+    std::string prettyText;
+    if (jsonModule.Stringify(doc, prettyText, &pretty) == spectre::StatusCode::Ok) {
+        std::cout << "  pretty =>\n" << prettyText << std::endl;
+    }
+
+    spectre::es2025::JsonModule::ParseOptions permissive;
+    permissive.allowComments = true;
+    permissive.allowTrailingCommas = true;
+    permissive.maxDepth = 32;
+    permissive.maxNodes = 256;
+    spectre::es2025::JsonModule::Document annotated;
+    const std::string annotatedPayload = "{/*cache*/\"title\":\"caf\\u00e9\",\"size\":128,}";
+    status = jsonModule.Parse(annotatedPayload, annotated, diagnostics, &permissive);
+    if (status == spectre::StatusCode::Ok) {
+        spectre::es2025::JsonModule::StringifyOptions ascii;
+        ascii.asciiOnly = true;
+        std::string asciiText;
+        if (jsonModule.Stringify(annotated, asciiText, &ascii) == spectre::StatusCode::Ok) {
+            std::cout << "  ascii => " << asciiText << std::endl;
+        }
+    } else {
+        std::cout << "  permissive parse failed => " << diagnostics << std::endl;
+    }
+
+    const auto &metrics = jsonModule.GetMetrics();
+    std::cout << "  metrics parseCalls=" << metrics.parseCalls
+              << " stringifyCalls=" << metrics.stringifyCalls
+              << " peakNodes=" << metrics.peakNodeCount
+              << " peakStringBytes=" << metrics.peakStringArena << std::endl;
+}
 int main() {
 
     using namespace spectre;
@@ -1962,6 +2048,12 @@ int main() {
         return 1;
     }
 
+    auto *jsonModulePtr = environment.FindModule("JSON");
+    auto *jsonModule = dynamic_cast<es2025::JsonModule *>(jsonModulePtr);
+    if (!jsonModule) {
+        std::cerr << "JSON module unavailable" << std::endl;
+        return 1;
+    }
     auto *arrayModulePtr = environment.FindModule("Array");
     auto *arrayModule = dynamic_cast<es2025::ArrayModule *>(arrayModulePtr);
     if (!arrayModule) {
@@ -2080,6 +2172,7 @@ int main() {
     DemonstrateArrayBufferModule(*arrayBufferModule);
     DemonstrateTypedArrayModule(*typedArrayModule);
     DemonstrateStructuredClone(*structuredCloneModule, *arrayBufferModule, *sharedArrayModule, *typedArrayModule);
+    DemonstrateJsonModule(*jsonModule);
     DemonstrateAtomicsModule(*atomicsModule);
     DemonstrateBooleanModule(*booleanModule);
     DemonstrateStringModule(*stringModule);
@@ -2138,6 +2231,7 @@ int main() {
     std::cout << "\nES2025 production scaffold ready" << std::endl;
     return 0;
 }
+
 
 
 
