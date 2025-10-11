@@ -43,6 +43,7 @@
 #include "spectre/es2025/modules/typed_array_module.h"
 #include "spectre/es2025/modules/structured_clone_module.h"
 #include "spectre/es2025/modules/json_module.h"
+#include "spectre/es2025/modules/module_loader_module.h"
 #include "spectre/es2025/modules/symbol_module.h"
 #include "spectre/es2025/modules/reflect_module.h"
 #include "spectre/es2025/modules/weak_ref_module.h"
@@ -3465,6 +3466,245 @@ namespace {
         return ok;
     }
 
+    struct ModuleResolverPayload {
+        int calls;
+        std::string lastSpecifier;
+        ModuleResolverPayload() : calls(0), lastSpecifier() {
+        }
+    };
+
+    StatusCode TestModuleResolver(void *userData,
+                                  std::string_view specifier,
+                                  std::string &outSource,
+                                  std::vector<std::string> &outDependencies) {
+        auto *payload = static_cast<ModuleResolverPayload *>(userData);
+        if (payload != nullptr) {
+            payload->calls += 1;
+            payload->lastSpecifier = std::string(specifier);
+        }
+        if (specifier == "lazy.core") {
+            outSource = "return 'Lazy';";
+            outDependencies.clear();
+            return StatusCode::Ok;
+        }
+        outSource.clear();
+        outDependencies.clear();
+        return StatusCode::NotFound;
+    }
+
+    bool ModuleLoaderModuleBuildsAndEvaluatesGraph() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        bool ok = ExpectTrue(runtime != nullptr, "Runtime created");
+        if (!runtime) {
+            return false;
+        }
+        auto &environment = runtime->EsEnvironment();
+        auto *module = dynamic_cast<spectre::es2025::ModuleLoaderModule *>(environment.FindModule("ModuleLoader"));
+        ok &= ExpectTrue(module != nullptr, "Module loader available");
+        if (!module) {
+            return false;
+        }
+
+        spectre::es2025::ModuleLoaderModule::RegisterOptions optA;
+        optA.overrideDependencies = true;
+        spectre::es2025::ModuleLoaderModule::Handle modA = spectre::es2025::ModuleLoaderModule::kInvalidHandle;
+        ok &= ExpectStatus(module->RegisterModule("mod.A", "return 'A';", modA, optA), StatusCode::Ok,
+                           "Register mod.A");
+
+        spectre::es2025::ModuleLoaderModule::RegisterOptions optB;
+        optB.overrideDependencies = true;
+        optB.dependencies = {"mod.A"};
+        spectre::es2025::ModuleLoaderModule::Handle modB = spectre::es2025::ModuleLoaderModule::kInvalidHandle;
+        ok &= ExpectStatus(module->RegisterModule("mod.B", "return 'B';", modB, optB), StatusCode::Ok,
+                           "Register mod.B");
+
+        spectre::es2025::ModuleLoaderModule::RegisterOptions optC;
+        optC.overrideDependencies = true;
+        optC.dependencies = {"mod.A", "mod.B"};
+        spectre::es2025::ModuleLoaderModule::Handle modC = spectre::es2025::ModuleLoaderModule::kInvalidHandle;
+        ok &= ExpectStatus(module->RegisterModule("mod.C", "return 'C';", modC, optC), StatusCode::Ok,
+                           "Register mod.C");
+
+        auto eval = module->Evaluate(modC);
+        ok &= ExpectStatus(eval.status, StatusCode::Ok, "Evaluate mod.C status");
+        ok &= ExpectTrue(eval.value == "C", "Evaluate mod.C value");
+
+        const auto snapA = module->Snapshot(modA);
+        const auto snapB = module->Snapshot(modB);
+        const auto snapC = module->Snapshot(modC);
+        ok &= ExpectTrue(snapA.version == 1, "mod.A version 1");
+        ok &= ExpectTrue(snapB.version == 1, "mod.B version 1");
+        ok &= ExpectTrue(snapC.version == 1, "mod.C version 1");
+
+        const auto &metrics = module->GetMetrics();
+        ok &= ExpectTrue(metrics.evaluations >= 3, "Module evaluations tracked");
+        ok &= ExpectTrue(metrics.cacheMisses >= 3, "Initial cache misses tracked");
+        ok &= ExpectTrue(metrics.cyclesDetected == 0, "No cycles detected");
+        return ok;
+    }
+
+    bool ModuleLoaderModuleCachesEvaluations() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        bool ok = ExpectTrue(runtime != nullptr, "Runtime created");
+        if (!runtime) {
+            return false;
+        }
+        auto *module = dynamic_cast<spectre::es2025::ModuleLoaderModule *>(
+            runtime->EsEnvironment().FindModule("ModuleLoader"));
+        ok &= ExpectTrue(module != nullptr, "Module loader available");
+        if (!module) {
+            return false;
+        }
+
+        spectre::es2025::ModuleLoaderModule::RegisterOptions options;
+        options.overrideDependencies = true;
+        spectre::es2025::ModuleLoaderModule::Handle modCore = spectre::es2025::ModuleLoaderModule::kInvalidHandle;
+        ok &= ExpectStatus(module->RegisterModule("cache.core", "return 'cache';", modCore, options), StatusCode::Ok,
+                           "Register cache module");
+
+        auto firstEval = module->Evaluate(modCore);
+        ok &= ExpectStatus(firstEval.status, StatusCode::Ok, "First evaluation status");
+        ok &= ExpectTrue(firstEval.value == "cache", "First evaluation value");
+
+        auto snapshot = module->Snapshot(modCore);
+        ok &= ExpectTrue(snapshot.version == 1, "Version after initial evaluation");
+
+        auto secondEval = module->Evaluate(modCore);
+        ok &= ExpectStatus(secondEval.status, StatusCode::Ok, "Second evaluation status");
+        ok &= ExpectTrue(secondEval.value == "cache", "Second evaluation cached value");
+
+        snapshot = module->Snapshot(modCore);
+        ok &= ExpectTrue(snapshot.version == 1, "Version unchanged after cached evaluation");
+        const auto &metrics = module->GetMetrics();
+        ok &= ExpectTrue(metrics.cacheMisses >= 1, "Cache miss recorded");
+        ok &= ExpectTrue(metrics.cacheHits >= 1, "Cache hit recorded");
+        ok &= ExpectTrue(metrics.evaluations == 1, "Evaluations count remains one");
+        return ok;
+    }
+
+    bool ModuleLoaderModulePropagatesUpdates() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        bool ok = ExpectTrue(runtime != nullptr, "Runtime created");
+        if (!runtime) {
+            return false;
+        }
+        auto *module = dynamic_cast<spectre::es2025::ModuleLoaderModule *>(
+            runtime->EsEnvironment().FindModule("ModuleLoader"));
+        ok &= ExpectTrue(module != nullptr, "Module loader available");
+        if (!module) {
+            return false;
+        }
+
+        spectre::es2025::ModuleLoaderModule::RegisterOptions options;
+        options.overrideDependencies = true;
+        spectre::es2025::ModuleLoaderModule::Handle modBase = spectre::es2025::ModuleLoaderModule::kInvalidHandle;
+        ok &= ExpectStatus(module->RegisterModule("update.base", "return 'base';", modBase, options), StatusCode::Ok,
+                           "Register base");
+
+        spectre::es2025::ModuleLoaderModule::RegisterOptions modLiftOptions;
+        modLiftOptions.overrideDependencies = true;
+        modLiftOptions.dependencies = {"update.base"};
+        spectre::es2025::ModuleLoaderModule::Handle modLift = spectre::es2025::ModuleLoaderModule::kInvalidHandle;
+        ok &= ExpectStatus(module->RegisterModule("update.lift", "return 'lift';", modLift, modLiftOptions),
+                           StatusCode::Ok, "Register lift");
+
+        spectre::es2025::ModuleLoaderModule::RegisterOptions modFinalOptions;
+        modFinalOptions.overrideDependencies = true;
+        modFinalOptions.dependencies = {"update.base", "update.lift"};
+        spectre::es2025::ModuleLoaderModule::Handle modFinal = spectre::es2025::ModuleLoaderModule::kInvalidHandle;
+        ok &= ExpectStatus(module->RegisterModule("update.final", "return 'final';", modFinal, modFinalOptions),
+                           StatusCode::Ok, "Register final");
+
+        ok &= ExpectStatus(module->Evaluate(modFinal).status, StatusCode::Ok, "Initial graph evaluation");
+
+        spectre::es2025::ModuleLoaderModule::RegisterOptions refreshOptions;
+        refreshOptions.overrideDependencies = true;
+        refreshOptions.dependencies = {};
+        ok &= ExpectStatus(module->RegisterModule("update.base", "return 'base-2';", modBase, refreshOptions),
+                           StatusCode::Ok, "Refresh base");
+
+        auto eval = module->Evaluate(modFinal);
+        ok &= ExpectStatus(eval.status, StatusCode::Ok, "Evaluate after update");
+        ok &= ExpectTrue(eval.value == "final", "Final module return unchanged");
+
+        const auto snapBase = module->Snapshot(modBase);
+        const auto snapLift = module->Snapshot(modLift);
+        const auto snapFinal = module->Snapshot(modFinal);
+        ok &= ExpectTrue(snapBase.version == 2, "Base version increments");
+        ok &= ExpectTrue(snapLift.version == 2, "Lift version increments");
+        ok &= ExpectTrue(snapFinal.version == 2, "Final version increments");
+        return ok;
+    }
+
+    bool ModuleLoaderModuleDetectsCycles() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        bool ok = ExpectTrue(runtime != nullptr, "Runtime created");
+        if (!runtime) {
+            return false;
+        }
+        auto *module = dynamic_cast<spectre::es2025::ModuleLoaderModule *>(
+            runtime->EsEnvironment().FindModule("ModuleLoader"));
+        ok &= ExpectTrue(module != nullptr, "Module loader available");
+        if (!module) {
+            return false;
+        }
+
+        spectre::es2025::ModuleLoaderModule::RegisterOptions optA;
+        optA.overrideDependencies = true;
+        optA.dependencies = {"cycle.B"};
+        spectre::es2025::ModuleLoaderModule::Handle modA = spectre::es2025::ModuleLoaderModule::kInvalidHandle;
+        ok &= ExpectStatus(module->RegisterModule("cycle.A", "return 'A';", modA, optA), StatusCode::Ok,
+                           "Register cycle.A");
+
+        spectre::es2025::ModuleLoaderModule::RegisterOptions optB;
+        optB.overrideDependencies = true;
+        optB.dependencies = {"cycle.A"};
+        spectre::es2025::ModuleLoaderModule::Handle modB = spectre::es2025::ModuleLoaderModule::kInvalidHandle;
+        ok &= ExpectStatus(module->RegisterModule("cycle.B", "return 'B';", modB, optB), StatusCode::Ok,
+                           "Register cycle.B");
+
+        auto eval = module->Evaluate(modA);
+        ok &= ExpectStatus(eval.status, StatusCode::InvalidArgument, "Cycle detection status");
+        ok &= ExpectTrue(eval.diagnostics.find("Circular") != std::string::npos, "Cycle diagnostics");
+        return ok;
+    }
+
+    bool ModuleLoaderModuleResolvesLazyModules() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        bool ok = ExpectTrue(runtime != nullptr, "Runtime created");
+        if (!runtime) {
+            return false;
+        }
+        auto *module = dynamic_cast<spectre::es2025::ModuleLoaderModule *>(
+            runtime->EsEnvironment().FindModule("ModuleLoader"));
+        ok &= ExpectTrue(module != nullptr, "Module loader available");
+        if (!module) {
+            return false;
+        }
+
+        ModuleResolverPayload payload;
+        module->SetHostResolver(TestModuleResolver, &payload);
+
+        spectre::es2025::ModuleLoaderModule::Handle lazyHandle = spectre::es2025::ModuleLoaderModule::kInvalidHandle;
+        ok &= ExpectStatus(module->EnsureModule("lazy.core", lazyHandle), StatusCode::Ok, "Ensure lazy module");
+
+        auto eval = module->Evaluate(lazyHandle);
+        ok &= ExpectStatus(eval.status, StatusCode::Ok, "Resolver evaluation status");
+        ok &= ExpectTrue(eval.value == "Lazy", "Resolver evaluation value");
+        ok &= ExpectTrue(payload.calls == 1, "Resolver invoked once");
+        ok &= ExpectTrue(payload.lastSpecifier == "lazy.core", "Resolver specifier recorded");
+
+        auto second = module->Evaluate(lazyHandle);
+        ok &= ExpectStatus(second.status, StatusCode::Ok, "Second resolver evaluation");
+        ok &= ExpectTrue(payload.calls == 1, "Resolver not reinvoked");
+
+        const auto &metrics = module->GetMetrics();
+        ok &= ExpectTrue(metrics.resolverRequests >= 1, "Resolver requests tracked");
+        ok &= ExpectTrue(metrics.resolverHits >= 1, "Resolver hits tracked");
+        ok &= ExpectTrue(metrics.cacheHits >= 1, "Cache hit after resolver");
+        return ok;
+    }
+
     struct TestCase {
         const char *name;
 
@@ -3532,6 +3772,11 @@ int main() {
         {"TemporalModuleHandlesInstantsAndDurations", TemporalModuleHandlesInstantsAndDurations},
         {"JsonModuleParsesStructuredPayload", JsonModuleParsesStructuredPayload},
         {"JsonModuleHonorsOptionsAndAsciiStringify", JsonModuleHonorsOptionsAndAsciiStringify},
+        {"ModuleLoaderModuleBuildsAndEvaluatesGraph", ModuleLoaderModuleBuildsAndEvaluatesGraph},
+        {"ModuleLoaderModuleCachesEvaluations", ModuleLoaderModuleCachesEvaluations},
+        {"ModuleLoaderModulePropagatesUpdates", ModuleLoaderModulePropagatesUpdates},
+        {"ModuleLoaderModuleDetectsCycles", ModuleLoaderModuleDetectsCycles},
+        {"ModuleLoaderModuleResolvesLazyModules", ModuleLoaderModuleResolvesLazyModules},
         {"StructuredCloneModuleClonesComplexGraphs", StructuredCloneModuleClonesComplexGraphs},
         {"StructuredCloneModuleSerializesRoundTrips", StructuredCloneModuleSerializesRoundTrips},
         {"TickAndReconfigureUpdatesState", TickAndReconfigureUpdatesState}
@@ -3553,5 +3798,6 @@ int main() {
     std::cout << "Executed " << passed << " / " << tests.size() << " tests" << std::endl;
     return 0;
 }
+
 
 

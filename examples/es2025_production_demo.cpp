@@ -38,6 +38,7 @@
 #include "spectre/es2025/modules/typed_array_module.h"
 #include "spectre/es2025/modules/structured_clone_module.h"
 #include "spectre/es2025/modules/json_module.h"
+#include "spectre/es2025/modules/module_loader_module.h"
 #include "spectre/es2025/modules/symbol_module.h"
 #include "spectre/es2025/modules/math_module.h"
 #include "spectre/es2025/modules/number_module.h"
@@ -1071,6 +1072,79 @@ void DemonstrateStructuredClone(spectre::es2025::StructuredCloneModule &cloneMod
     arrayModule.Destroy(bufferHandle);
 }
 
+void DemonstrateModuleLoader(spectre::es2025::ModuleLoaderModule &loader,
+                             spectre::es2025::GlobalModule &globalModule) {
+    std::cout << "\nModule loader graph demo" << std::endl;
+    using Loader = spectre::es2025::ModuleLoaderModule;
+
+    Loader::RegisterOptions options;
+    options.overrideDependencies = true;
+    options.dependencies.reserve(3);
+
+    Loader::Handle configHandle = Loader::kInvalidHandle;
+    auto status = loader.RegisterModule("demo.module.config", "return 'cfg';", configHandle, options);
+    if (status != spectre::StatusCode::Ok) {
+        std::cout << "  failed to register config" << std::endl;
+        return;
+    }
+
+    Loader::Handle assetsHandle = Loader::kInvalidHandle;
+    options.dependencies.clear();
+    options.dependencies.push_back("demo.module.config");
+    status = loader.RegisterModule("demo.module.assets", "return 'assets-v1';", assetsHandle, options);
+    if (status != spectre::StatusCode::Ok) {
+        std::cout << "  failed to register assets" << std::endl;
+        return;
+    }
+
+    Loader::Handle entryHandle = Loader::kInvalidHandle;
+    options.dependencies.clear();
+    options.dependencies.push_back("demo.module.config");
+    options.dependencies.push_back("demo.module.assets");
+    status = loader.RegisterModule("demo.module.entry", "return 'entry';", entryHandle, options);
+    if (status != spectre::StatusCode::Ok) {
+        std::cout << "  failed to register entry" << std::endl;
+        return;
+    }
+
+    auto evaluateAndLog = [&](Loader::Handle handle, std::string_view label) {
+        auto evaluation = loader.Evaluate(handle);
+        if (evaluation.status == spectre::StatusCode::Ok) {
+            std::cout << "  " << label << " => " << evaluation.value << std::endl;
+        } else {
+            std::cout << "  " << label << " failed => " << evaluation.diagnostics << std::endl;
+        }
+    };
+
+    evaluateAndLog(entryHandle, "entry initial");
+    evaluateAndLog(entryHandle, "entry cached");
+
+    auto snapshotEntry = loader.Snapshot(entryHandle);
+    std::cout << "  entry version=" << snapshotEntry.version
+              << " context=" << globalModule.DefaultContext() << std::endl;
+
+    options.dependencies.clear();
+    options.dependencies.push_back("demo.module.config");
+    status = loader.RegisterModule("demo.module.assets", "return 'assets-v2';", assetsHandle, options);
+    if (status == spectre::StatusCode::Ok) {
+        evaluateAndLog(entryHandle, "entry updated");
+    }
+
+    const auto snapConfig = loader.Snapshot(configHandle);
+    const auto snapAssets = loader.Snapshot(assetsHandle);
+    snapshotEntry = loader.Snapshot(entryHandle);
+    std::cout << "  versions config=" << snapConfig.version
+              << " assets=" << snapAssets.version
+              << " entry=" << snapshotEntry.version << std::endl;
+
+    const auto &metrics = loader.GetMetrics();
+    std::cout << "  metrics evals=" << metrics.evaluations
+              << " cacheHits=" << metrics.cacheHits
+              << " cacheMisses=" << metrics.cacheMisses
+              << " resolver=" << metrics.resolverHits << "/" << metrics.resolverRequests
+              << " graphDepth=" << metrics.maxGraphDepth << std::endl;
+}
+
 void ShowcaseSymbols(spectre::es2025::SymbolModule &symbolModule) {
     std::cout << "\nSymbol registry demo" << std::endl;
     auto iteratorHandle = symbolModule.WellKnownHandle(spectre::es2025::SymbolModule::WellKnown::Iterator);
@@ -2077,6 +2151,13 @@ int main() {
         return 1;
     }
 
+    auto *moduleLoaderPtr = environment.FindModule("ModuleLoader");
+    auto *moduleLoader = dynamic_cast<es2025::ModuleLoaderModule *>(moduleLoaderPtr);
+    if (!moduleLoader) {
+        std::cerr << "ModuleLoader module unavailable" << std::endl;
+        return 1;
+    }
+
     auto *asyncFunctionModulePtr = environment.FindModule("AsyncFunction");
     auto *asyncFunctionModule = dynamic_cast<es2025::AsyncFunctionModule *>(asyncFunctionModulePtr);
     if (!asyncFunctionModule) {
@@ -2251,6 +2332,7 @@ int main() {
     }
 
     EvaluateSampleScripts(*globalModule);
+    DemonstrateModuleLoader(*moduleLoader, *globalModule);
 
     ShowcaseSymbols(*symbolModule);
     DemonstrateIteratorModule(*iteratorModule);
