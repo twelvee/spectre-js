@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cctype>
 #include <array>
+#include <chrono>
 #include <cstdint>
 
 #include <numeric>
@@ -52,6 +53,7 @@
 #include "spectre/es2025/modules/shadow_realm_module.h"
 #include "spectre/es2025/modules/temporal_module.h"
 #include "spectre/es2025/value.h"
+#include "spectre/es2025/modules/intl_module.h"
 
 namespace {
     spectre::StatusCode DemoSumCallback(const std::vector<std::string> &args, std::string &outResult, void *) {
@@ -1070,6 +1072,84 @@ void DemonstrateStructuredClone(spectre::es2025::StructuredCloneModule &cloneMod
     typedArrayModule.Destroy(typedHandle);
     sharedModule.Destroy(sharedHandle);
     arrayModule.Destroy(bufferHandle);
+}
+
+void DemonstrateIntl(spectre::es2025::IntlModule &intl) {
+    std::cout << "Intl formatting demo" << std::endl;
+
+    spectre::es2025::IntlModule::NumberFormatOptions usdOptions;
+    usdOptions.style = spectre::es2025::IntlModule::NumberStyle::Currency;
+    usdOptions.currency = "USD";
+    usdOptions.minimumFractionDigits = 2;
+    usdOptions.maximumFractionDigits = 2;
+
+    auto usd = intl.FormatNumber("en-US", 9876543.21, usdOptions);
+    if (usd.status == spectre::StatusCode::Ok) {
+        std::cout << "  en-US currency => " << usd.value << std::endl;
+    } else {
+        std::cout << "  en-US currency failed => " << usd.diagnostics << std::endl;
+    }
+
+    spectre::es2025::IntlModule::LocaleHandle ruHandle = spectre::es2025::IntlModule::kInvalidLocale;
+    auto ensureStatus = intl.EnsureLocale("ru-RU", ruHandle);
+    if (ensureStatus != spectre::StatusCode::Ok) {
+        std::cout << "  ru-RU ensure failed" << std::endl;
+        return;
+    }
+
+    spectre::es2025::IntlModule::NumberFormatOptions rubOptions;
+    rubOptions.style = spectre::es2025::IntlModule::NumberStyle::Currency;
+    rubOptions.currency = "RUB";
+    rubOptions.minimumFractionDigits = 2;
+    rubOptions.maximumFractionDigits = 2;
+    auto rub = intl.FormatNumber(ruHandle, -54321.75, rubOptions);
+    if (rub.status == spectre::StatusCode::Ok) {
+        std::cout << "  ru-RU currency => " << rub.value << std::endl;
+    } else {
+        std::cout << "  ru-RU currency failed => " << rub.diagnostics << std::endl;
+    }
+
+    spectre::es2025::IntlModule::NumberFormatOptions percentOptions;
+    percentOptions.style = spectre::es2025::IntlModule::NumberStyle::Percent;
+    percentOptions.minimumFractionDigits = 1;
+    percentOptions.maximumFractionDigits = 1;
+    auto percent = intl.FormatNumber(ruHandle, 0.423, percentOptions);
+    if (percent.status == spectre::StatusCode::Ok) {
+        std::cout << "  ru-RU percent => " << percent.value << std::endl;
+    }
+
+    spectre::es2025::IntlModule::DateTimeFormatOptions dtOptions;
+    dtOptions.dateStyle = spectre::es2025::IntlModule::DateStyle::Long;
+    dtOptions.timeStyle = spectre::es2025::IntlModule::TimeStyle::Medium;
+    dtOptions.timeZone = spectre::es2025::IntlModule::TimeZone::Utc;
+    auto sample = std::chrono::system_clock::from_time_t(1717171717);
+    auto dateTime = intl.FormatDateTime(ruHandle, sample, dtOptions);
+    if (dateTime.status == spectre::StatusCode::Ok) {
+        std::cout << "  ru-RU datetime => " << dateTime.value << std::endl;
+    }
+
+    spectre::es2025::IntlModule::ListFormatOptions ruListOptions;
+    ruListOptions.type = spectre::es2025::IntlModule::ListType::Conjunction;
+    ruListOptions.style = spectre::es2025::IntlModule::ListStyle::Long;
+    auto ruList = intl.FormatList(ruHandle, {"yabloko", "banan", "malina"}, ruListOptions);
+    if (ruList.status == spectre::StatusCode::Ok) {
+        std::cout << "  ru-RU list => " << ruList.value << std::endl;
+    }
+
+    spectre::es2025::IntlModule::ListFormatOptions ukListOptions;
+    ukListOptions.type = spectre::es2025::IntlModule::ListType::Disjunction;
+    ukListOptions.style = spectre::es2025::IntlModule::ListStyle::Short;
+    auto ukList = intl.FormatList("en-GB", {"alpha", "beta", "gamma"}, ukListOptions);
+    if (ukList.status == spectre::StatusCode::Ok) {
+        std::cout << "  en-GB options => " << ukList.value << std::endl;
+    }
+
+    const auto &metrics = intl.GetMetrics();
+    std::cout << "  metrics locales=" << metrics.localesRegistered
+              << " numberHits=" << metrics.numberFormatterHits
+              << " dateHits=" << metrics.dateFormatterHits
+              << " listHits=" << metrics.listFormatterHits
+              << " cacheEvictions=" << metrics.cacheEvictions << std::endl;
 }
 
 void DemonstrateModuleLoader(spectre::es2025::ModuleLoaderModule &loader,
@@ -2225,6 +2305,12 @@ int main() {
         std::cerr << "JSON module unavailable" << std::endl;
         return 1;
     }
+    auto *intlModulePtr = environment.FindModule("Intl");
+    auto *intlModule = dynamic_cast<es2025::IntlModule *>(intlModulePtr);
+    if (!intlModule) {
+        std::cerr << "Intl module unavailable" << std::endl;
+        return 1;
+    }
     auto *arrayModulePtr = environment.FindModule("Array");
     auto *arrayModule = dynamic_cast<es2025::ArrayModule *>(arrayModulePtr);
     if (!arrayModule) {
@@ -2346,6 +2432,7 @@ int main() {
     DemonstrateTypedArrayModule(*typedArrayModule);
     DemonstrateStructuredClone(*structuredCloneModule, *arrayBufferModule, *sharedArrayModule, *typedArrayModule);
     DemonstrateJsonModule(*jsonModule);
+    DemonstrateIntl(*intlModule);
     DemonstrateAtomicsModule(*atomicsModule);
     DemonstrateBooleanModule(*booleanModule);
     DemonstrateStringModule(*stringModule);
@@ -2404,6 +2491,9 @@ int main() {
     std::cout << "\nES2025 production scaffold ready" << std::endl;
     return 0;
 }
+
+
+
 
 
 

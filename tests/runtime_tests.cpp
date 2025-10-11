@@ -3,6 +3,7 @@
 #include <string>
 #include <algorithm>
 #include <array>
+#include <span>
 #include <cstdint>
 #include <utility>
 #include <vector>
@@ -37,6 +38,7 @@
 #include "spectre/es2025/modules/number_module.h"
 #include "spectre/es2025/modules/bigint_module.h"
 #include "spectre/es2025/modules/date_module.h"
+#include "spectre/es2025/modules/intl_module.h"
 #include "spectre/es2025/modules/string_module.h"
 #include "spectre/es2025/modules/regexp_module.h"
 #include "spectre/es2025/modules/data_view_module.h"
@@ -1924,6 +1926,7 @@ namespace {
 
     bool ArrayBufferModuleAllocatesAndPools() {
         auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        std::cout << "    [debug] runtime created" << std::endl;
         auto &environment = runtime->EsEnvironment();
         auto *bufferModule = dynamic_cast<spectre::es2025::ArrayBufferModule *>(environment.FindModule("ArrayBuffer"));
         bool ok = ExpectTrue(bufferModule != nullptr, "ArrayBuffer module available");
@@ -1932,11 +1935,13 @@ namespace {
         }
         spectre::es2025::ArrayBufferModule::Handle bufferHandle = 0;
         ok &= ExpectStatus(bufferModule->Create("demo.buffer", 256, bufferHandle), StatusCode::Ok, "Create buffer");
+        std::cout << "    [debug] buffer created" << std::endl;
         ok &= ExpectTrue(bufferModule->Has(bufferHandle), "Buffer registered");
         ok &= ExpectTrue(bufferModule->ByteLength(bufferHandle) == 256, "Byte length reported");
         std::vector<std::uint8_t> scratch(256, 0xCD);
         ok &= ExpectStatus(bufferModule->CopyOut(bufferHandle, 0, scratch.data(), scratch.size()), StatusCode::Ok,
                            "CopyOut fresh buffer");
+        std::cout << "    [debug] copyout fresh" << std::endl;
         bool zeroed = std::all_of(scratch.begin(), scratch.end(), [](std::uint8_t value) {
             return value == 0;
         });
@@ -1946,13 +1951,16 @@ namespace {
         }
         ok &= ExpectStatus(bufferModule->CopyIn(bufferHandle, 0, scratch.data(), scratch.size()), StatusCode::Ok,
                            "CopyIn pattern");
+        std::cout << "    [debug] copyin pattern" << std::endl;
         spectre::es2025::ArrayBufferModule::Handle sliceHandle = 0;
         ok &= ExpectStatus(bufferModule->Slice(bufferHandle, 32, 64, "demo.slice", sliceHandle), StatusCode::Ok,
                            "Create slice");
+        std::cout << "    [debug] slice created" << std::endl;
         ok &= ExpectTrue(bufferModule->ByteLength(sliceHandle) == 32, "Slice byte length");
         std::array<std::uint8_t, 32> sliceData{};
         ok &= ExpectStatus(bufferModule->CopyOut(sliceHandle, 0, sliceData.data(), sliceData.size()), StatusCode::Ok,
                            "CopyOut slice");
+        std::cout << "    [debug] slice copyout" << std::endl;
         bool contiguous = true;
         for (std::size_t i = 0; i < sliceData.size(); ++i) {
             contiguous &= sliceData[i] == static_cast<std::uint8_t>((i + 32) & 0xFF);
@@ -1961,14 +1969,17 @@ namespace {
         spectre::es2025::ArrayBufferModule::Handle cloneHandle = 0;
         ok &= ExpectStatus(bufferModule->Clone(bufferHandle, "demo.clone", cloneHandle), StatusCode::Ok,
                            "Clone buffer");
+        std::cout << "    [debug] clone created" << std::endl;
         std::vector<std::uint8_t> cloneData(256, 0);
         ok &= ExpectStatus(bufferModule->CopyOut(cloneHandle, 0, cloneData.data(), cloneData.size()), StatusCode::Ok,
                            "CopyOut clone");
+        std::cout << "    [debug] clone copyout" << std::endl;
         bool cloneMatches = true;
         for (std::size_t i = 0; i < cloneData.size(); ++i) {
             cloneMatches &= cloneData[i] == static_cast<std::uint8_t>(i & 0xFF);
         }
         ok &= ExpectTrue(cloneMatches, "Clone preserves payload");
+        ok &= ExpectStatus(bufferModule->Fill(bufferHandle, 0xAA), StatusCode::Ok, "Fill buffer");
         ok &= ExpectStatus(bufferModule->Fill(bufferHandle, 0xAA), StatusCode::Ok, "Fill buffer");
         ok &= ExpectStatus(bufferModule->CopyOut(bufferHandle, 0, scratch.data(), scratch.size()), StatusCode::Ok,
                            "CopyOut filled buffer");
@@ -3047,6 +3058,76 @@ namespace {
         return ok;
     }
 
+    bool IntlModuleFormatsNumbersDatesAndLists() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        bool ok = ExpectTrue(runtime != nullptr, "Runtime created");
+        if (!runtime) {
+            return false;
+        }
+        auto &environment = runtime->EsEnvironment();
+        auto *modulePtr = environment.FindModule("Intl");
+        auto *intl = dynamic_cast<spectre::es2025::IntlModule *>(modulePtr);
+        ok &= ExpectTrue(intl != nullptr, "Intl module available");
+        if (!intl) {
+            return false;
+        }
+
+        spectre::es2025::IntlModule::NumberFormatOptions decimalOptions;
+        decimalOptions.useGrouping = true;
+        decimalOptions.minimumFractionDigits = 2;
+        decimalOptions.maximumFractionDigits = 2;
+        auto decimal = intl->FormatNumber("en-US", 12345.6789, decimalOptions);
+        ok &= ExpectTrue(decimal.status == StatusCode::Ok, "en-US decimal formatted");
+        ok &= ExpectTrue(decimal.value == "12,345.68", "en-US decimal value");
+
+        spectre::es2025::IntlModule::NumberFormatOptions currencyOptions;
+        currencyOptions.style = spectre::es2025::IntlModule::NumberStyle::Currency;
+        currencyOptions.currency = "USD";
+        currencyOptions.minimumFractionDigits = 2;
+        currencyOptions.maximumFractionDigits = 2;
+        auto usd = intl->FormatNumber("en-US", -42.5, currencyOptions);
+        ok &= ExpectTrue(usd.status == StatusCode::Ok, "en-US currency formatted");
+        ok &= ExpectTrue(usd.value == "-$42.50", "en-US currency pattern");
+
+        spectre::es2025::IntlModule::LocaleHandle ruHandle = spectre::es2025::IntlModule::kInvalidLocale;
+        ok &= ExpectStatus(intl->EnsureLocale("ru-RU", ruHandle), StatusCode::Ok, "ru-RU builtin ensured");
+
+        spectre::es2025::IntlModule::NumberFormatOptions rubOptions;
+        rubOptions.style = spectre::es2025::IntlModule::NumberStyle::Currency;
+        rubOptions.currency = "RUB";
+        rubOptions.minimumFractionDigits = 2;
+        rubOptions.maximumFractionDigits = 2;
+        auto rub = intl->FormatNumber(ruHandle, -54321.75, rubOptions);
+        ok &= ExpectTrue(rub.status == StatusCode::Ok, "ru-RU currency formatted");
+        ok &= ExpectTrue(rub.value == "-54 321,75 RUB", "ru-RU currency pattern");
+
+        spectre::es2025::IntlModule::DateTimeFormatOptions dtOptions;
+        dtOptions.dateStyle = spectre::es2025::IntlModule::DateStyle::Long;
+        dtOptions.timeStyle = spectre::es2025::IntlModule::TimeStyle::Medium;
+        dtOptions.timeZone = spectre::es2025::IntlModule::TimeZone::Utc;
+        auto sampleTime = std::chrono::system_clock::from_time_t(1717171717);
+        auto usDateTime = intl->FormatDateTime("en-US", sampleTime, dtOptions);
+        ok &= ExpectTrue(usDateTime.status == StatusCode::Ok, "en-US datetime formatted");
+        ok &= ExpectTrue(usDateTime.value == "May 31, 2024 4:08:37 PM", "en-US medium time pattern");
+
+        std::array<std::string_view, 3> fruit = {"yabloko", "banan", "malina"};
+        spectre::es2025::IntlModule::ListFormatOptions listOptions;
+        listOptions.type = spectre::es2025::IntlModule::ListType::Conjunction;
+        listOptions.style = spectre::es2025::IntlModule::ListStyle::Long;
+        auto ruList = intl->FormatList(ruHandle, std::span<const std::string_view>(fruit.data(), fruit.size()), listOptions);
+        ok &= ExpectTrue(ruList.status == StatusCode::Ok, "ru-RU list formatted");
+        ok &= ExpectTrue(ruList.value == "yabloko, banan, i malina", "ru-RU conjunction pattern");
+
+        spectre::es2025::IntlModule::ListFormatOptions choiceOptions;
+        choiceOptions.type = spectre::es2025::IntlModule::ListType::Disjunction;
+        choiceOptions.style = spectre::es2025::IntlModule::ListStyle::Short;
+        auto ruChoice = intl->FormatList("ru-RU", {"kofe", "chai"}, choiceOptions);
+        ok &= ExpectTrue(ruChoice.status == StatusCode::Ok, "ru-RU disjunction formatted");
+        ok &= ExpectTrue(ruChoice.value == "kofe ili chai", "ru-RU disjunction pattern");
+
+        return ok;
+    }
+
     bool JsonModuleParsesStructuredPayload() {
         auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
         auto &environment = runtime->EsEnvironment();
@@ -3770,6 +3851,7 @@ int main() {
         {"MathModuleAcceleratesWorkloads", MathModuleAcceleratesWorkloads},
         {"ShadowRealmModuleCreatesIsolatedRealms", ShadowRealmModuleCreatesIsolatedRealms},
         {"TemporalModuleHandlesInstantsAndDurations", TemporalModuleHandlesInstantsAndDurations},
+        {"IntlModuleFormatsNumbersDatesAndLists", IntlModuleFormatsNumbersDatesAndLists},
         {"JsonModuleParsesStructuredPayload", JsonModuleParsesStructuredPayload},
         {"JsonModuleHonorsOptionsAndAsciiStringify", JsonModuleHonorsOptionsAndAsciiStringify},
         {"ModuleLoaderModuleBuildsAndEvaluatesGraph", ModuleLoaderModuleBuildsAndEvaluatesGraph},
