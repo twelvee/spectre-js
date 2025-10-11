@@ -1,4 +1,4 @@
-#include "spectre/es2025/modules/map_module.h"
+﻿#include "spectre/es2025/modules/map_module.h"
 
 #include <algorithm>
 #include <cmath>
@@ -14,28 +14,7 @@ namespace spectre::es2025 {
         constexpr std::string_view kReference = "ECMA-262 Section 24.1";
         constexpr std::uint32_t kInitialBucketCount = 8;
 
-        std::uint64_t HashBytes(const void *data, std::size_t size) noexcept {
-            const auto *bytes = static_cast<const std::uint8_t *>(data);
-            std::uint64_t hash = 1469598103934665603ull;
-            for (std::size_t i = 0; i < size; ++i) {
-                hash ^= static_cast<std::uint64_t>(bytes[i]);
-                hash *= 1099511628211ull;
-            }
-            if (hash == 0) {
-                hash = 1469598103934665603ull;
-            }
-            return hash;
-        }
 
-        std::uint64_t HashString(std::string_view text) noexcept {
-            return HashBytes(text.data(), text.size());
-        }
-
-        std::uint64_t HashDouble(double value) noexcept {
-            std::uint64_t bits;
-            std::memcpy(&bits, &value, sizeof(double));
-            return HashBytes(&bits, sizeof(bits));
-        }
     }
 
     struct MapModule::Entry {
@@ -94,218 +73,6 @@ namespace spectre::es2025 {
         std::uint32_t generation;
         MapRecord record;
     };
-
-    MapModule::Value::Value() : m_Scalar(), m_Kind(Kind::Undefined), m_String() {
-    }
-
-    MapModule::Value::Value(const Value &other) : m_Scalar(), m_Kind(Kind::Undefined), m_String() {
-        Assign(other);
-    }
-
-    MapModule::Value::Value(Value &&other) noexcept : m_Scalar(), m_Kind(Kind::Undefined), m_String() {
-        Assign(std::move(other));
-    }
-
-    MapModule::Value &MapModule::Value::operator=(const Value &other) {
-        if (this != &other) {
-            Assign(other);
-        }
-        return *this;
-    }
-
-    MapModule::Value &MapModule::Value::operator=(Value &&other) noexcept {
-        if (this != &other) {
-            Assign(std::move(other));
-        }
-        return *this;
-    }
-
-    MapModule::Value::~Value() = default;
-
-    MapModule::Value MapModule::Value::Undefined() {
-        Value v;
-        v.Reset();
-        return v;
-    }
-
-    MapModule::Value MapModule::Value::FromBoolean(bool v) {
-        Value value;
-        value.m_Kind = Kind::Boolean;
-        value.m_Scalar.booleanValue = v;
-        value.m_String.clear();
-        return value;
-    }
-
-    MapModule::Value MapModule::Value::FromInt(std::int64_t v) {
-        Value value;
-        value.m_Kind = Kind::Int64;
-        value.m_Scalar.intValue = v;
-        value.m_String.clear();
-        return value;
-    }
-
-    MapModule::Value MapModule::Value::FromDouble(double v) {
-        Value value;
-        value.m_Kind = Kind::Double;
-        value.m_Scalar.doubleValue = v;
-        value.m_String.clear();
-        return value;
-    }
-
-    MapModule::Value MapModule::Value::FromHandle(Handle v) {
-        Value value;
-        value.m_Kind = Kind::Handle;
-        value.m_Scalar.handleValue = v;
-        value.m_String.clear();
-        return value;
-    }
-
-    MapModule::Value MapModule::Value::FromString(std::string_view text) {
-        Value value;
-        value.m_Kind = Kind::String;
-        value.m_Scalar.handleValue = 0;
-        value.m_String.assign(text.data(), text.size());
-        return value;
-    }
-
-    bool MapModule::Value::IsUndefined() const noexcept {
-        return m_Kind == Kind::Undefined;
-    }
-
-    bool MapModule::Value::IsBoolean() const noexcept {
-        return m_Kind == Kind::Boolean;
-    }
-
-    bool MapModule::Value::IsInt() const noexcept {
-        return m_Kind == Kind::Int64;
-    }
-
-    bool MapModule::Value::IsDouble() const noexcept {
-        return m_Kind == Kind::Double;
-    }
-
-    bool MapModule::Value::IsString() const noexcept {
-        return m_Kind == Kind::String;
-    }
-
-    bool MapModule::Value::IsHandle() const noexcept {
-        return m_Kind == Kind::Handle;
-    }
-
-    bool MapModule::Value::Boolean() const noexcept {
-        return m_Scalar.booleanValue;
-    }
-
-    std::int64_t MapModule::Value::Int() const noexcept {
-        return m_Scalar.intValue;
-    }
-
-    double MapModule::Value::Double() const noexcept {
-        return m_Scalar.doubleValue;
-    }
-
-    MapModule::Handle MapModule::Value::HandleValue() const noexcept {
-        return m_Scalar.handleValue;
-    }
-
-    std::string_view MapModule::Value::String() const noexcept {
-        return m_String;
-    }
-
-    void MapModule::Value::Assign(const Value &other) {
-        m_Kind = other.m_Kind;
-        switch (other.m_Kind) {
-            case Kind::Undefined:
-                m_Scalar.handleValue = 0;
-                m_String.clear();
-                break;
-            case Kind::Boolean:
-                m_Scalar.booleanValue = other.m_Scalar.booleanValue;
-                m_String.clear();
-                break;
-            case Kind::Int64:
-                m_Scalar.intValue = other.m_Scalar.intValue;
-                m_String.clear();
-                break;
-            case Kind::Double:
-                m_Scalar.doubleValue = other.m_Scalar.doubleValue;
-                m_String.clear();
-                break;
-            case Kind::Handle:
-                m_Scalar.handleValue = other.m_Scalar.handleValue;
-                m_String.clear();
-                break;
-            case Kind::String:
-                m_Scalar.handleValue = 0;
-                m_String = other.m_String;
-                break;
-        }
-    }
-
-    void MapModule::Value::Assign(Value &&other) noexcept {
-        m_Kind = other.m_Kind;
-        switch (other.m_Kind) {
-            case Kind::Undefined:
-                m_Scalar.handleValue = 0;
-                m_String.clear();
-                break;
-            case Kind::Boolean:
-                m_Scalar.booleanValue = other.m_Scalar.booleanValue;
-                m_String.clear();
-                break;
-            case Kind::Int64:
-                m_Scalar.intValue = other.m_Scalar.intValue;
-                m_String.clear();
-                break;
-            case Kind::Double:
-                m_Scalar.doubleValue = other.m_Scalar.doubleValue;
-                m_String.clear();
-                break;
-            case Kind::Handle:
-                m_Scalar.handleValue = other.m_Scalar.handleValue;
-                m_String.clear();
-                break;
-            case Kind::String:
-                m_Scalar.handleValue = 0;
-                m_String = std::move(other.m_String);
-                break;
-        }
-        other.m_Kind = Kind::Undefined;
-        other.m_Scalar.handleValue = 0;
-        other.m_String.clear();
-    }
-
-    void MapModule::Value::Reset() noexcept {
-        m_Kind = Kind::Undefined;
-        m_Scalar.handleValue = 0;
-        m_String.clear();
-    }
-
-    bool MapModule::Value::Equals(const Value &other) const noexcept {
-        if (m_Kind != other.m_Kind) {
-            return false;
-        }
-        switch (m_Kind) {
-            case Kind::Undefined:
-                return true;
-            case Kind::Boolean:
-                return m_Scalar.booleanValue == other.m_Scalar.booleanValue;
-            case Kind::Int64:
-                return m_Scalar.intValue == other.m_Scalar.intValue;
-            case Kind::Double: {
-                std::uint64_t a;
-                std::uint64_t b;
-                std::memcpy(&a, &m_Scalar.doubleValue, sizeof(double));
-                std::memcpy(&b, &other.m_Scalar.doubleValue, sizeof(double));
-                return a == b;
-            }
-            case Kind::Handle:
-                return m_Scalar.handleValue == other.m_Scalar.handleValue;
-            case Kind::String:
-                return m_String == other.m_String;
-        }
-        return false;
-    }
 
     MapModule::MapModule()
         : m_Runtime(nullptr),
@@ -459,7 +226,7 @@ namespace spectre::es2025 {
         std::uint32_t bucket = 0;
         auto index = Locate(*record, key, hash, bucket, collision);
         if (index != kInvalidIndex) {
-            record->entries[index].value.Assign(value);
+            record->entries[index].value = value;
             Touch(*record);
             if (collision) {
                 m_Metrics.collisions += 1;
@@ -647,23 +414,14 @@ namespace spectre::es2025 {
         return static_cast<std::uint32_t>((handle >> 32) & 0xffffffffull);
     }
 
-    std::uint64_t MapModule::HashValue(const Value &value) noexcept {
-        switch (value.m_Kind) {
-            case Value::Kind::Undefined:
-                return 0x9e3779b97f4a7c15ull;
-            case Value::Kind::Boolean:
-                return value.m_Scalar.booleanValue ? 0x51ed270b27b4f3cfull : 0x7f4a7c159e3779b9ull;
-            case Value::Kind::Int64:
-                return HashBytes(&value.m_Scalar.intValue, sizeof(std::int64_t));
-            case Value::Kind::Double:
-                return HashDouble(value.m_Scalar.doubleValue);
-            case Value::Kind::String:
-                return HashString(value.m_String);
-            case Value::Kind::Handle:
-                return HashBytes(&value.m_Scalar.handleValue, sizeof(Handle));
+        std::uint64_t MapModule::HashValue(const Value &value) noexcept {
+        auto hash = value.Hash();
+        if (hash == 0) {
+            hash = 0x9e3779b97f4a7c15ull;
         }
-        return 0x9e3779b97f4a7c15ull;
+        return hash;
     }
+
 
     void MapModule::Touch(MapRecord &record) noexcept {
         record.version += 1;
@@ -746,7 +504,7 @@ namespace spectre::es2025 {
                 }
             } else {
                 const auto &entry = record.entries[entryIndex];
-                if (entry.active && entry.hash == hash && entry.key.Equals(key)) {
+                if (entry.active && entry.hash == hash && entry.key.SameValueZero(key)) {
                     bucket = index;
                     collision = probes != 0;
                     return entryIndex;
@@ -790,7 +548,7 @@ namespace spectre::es2025 {
             if (!allowReplace) {
                 return StatusCode::AlreadyExists;
             }
-            record.entries[existing].value.Assign(value);
+            record.entries[existing].value = value;
             Touch(record);
             if (collision) {
                 m_Metrics.collisions += 1;
@@ -800,8 +558,8 @@ namespace spectre::es2025 {
         auto entryIndex = AllocateEntry(record);
         auto &entry = record.entries[entryIndex];
         entry.hash = hash;
-        entry.key.Assign(key);
-        entry.value.Assign(value);
+        entry.key = key;
+        entry.value = value;
         entry.orderPrev = kInvalidIndex;
         entry.orderNext = kInvalidIndex;
         if (record.buckets.empty()) {
@@ -884,3 +642,4 @@ namespace spectre::es2025 {
         entry.orderNext = kInvalidIndex;
     }
 }
+

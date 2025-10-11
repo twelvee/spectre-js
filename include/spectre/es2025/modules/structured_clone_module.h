@@ -12,6 +12,8 @@
 #include "spectre/es2025/modules/array_buffer_module.h"
 #include "spectre/es2025/modules/shared_array_buffer_module.h"
 #include "spectre/es2025/modules/typed_array_module.h"
+#include "spectre/es2025/modules/bigint_module.h"
+#include "spectre/es2025/modules/symbol_module.h"
 
 namespace spectre::es2025 {
     class StructuredCloneModule final : public Module {
@@ -19,9 +21,14 @@ namespace spectre::es2025 {
         struct Node {
             enum class Kind : std::uint8_t {
                 Undefined,
+                Null,
                 Boolean,
                 Number,
+                BigInt,
                 String,
+                Symbol,
+                Handle,
+                External,
                 Array,
                 Object,
                 Map,
@@ -153,6 +160,8 @@ namespace spectre::es2025 {
         ArrayBufferModule *m_ArrayBufferModule;
         SharedArrayBufferModule *m_SharedArrayBufferModule;
         TypedArrayModule *m_TypedArrayModule;
+        BigIntModule *m_BigIntModule;
+        SymbolModule *m_SymbolModule;
         bool m_GpuEnabled;
         bool m_Initialized;
         std::uint64_t m_CurrentFrame;
@@ -204,7 +213,17 @@ namespace spectre::es2025 {
 
         void WriteDouble(double value);
 
+        StatusCode WriteBigInt(const Node &node);
+        StatusCode WriteSymbol(const Node &node);
+        StatusCode WriteHandleNode(const Node &node);
+        StatusCode WriteExternal(const Node &node);
+
         StatusCode ReadNode(BinaryCursor &cursor, Node &outNode);
+
+        StatusCode ReadBigInt(BinaryCursor &cursor, Node &outNode);
+        StatusCode ReadSymbol(BinaryCursor &cursor, Node &outNode);
+        StatusCode ReadHandle(BinaryCursor &cursor, Node &outNode);
+        StatusCode ReadExternal(BinaryCursor &cursor, Node &outNode);
 
         StatusCode DeserializeArray(BinaryCursor &cursor, Node &outNode);
 

@@ -1,4 +1,4 @@
-
+﻿
 #include "spectre/es2025/modules/object_module.h"
 
 #include <algorithm>
@@ -94,211 +94,6 @@ namespace spectre::es2025 {
 
     ObjectModule::~ObjectModule() = default;
 
-    ObjectModule::Value::Value() : m_Scalar(), m_Kind(Kind::Undefined), m_String() {}
-
-    ObjectModule::Value::Value(const Value &other) : m_Scalar(), m_Kind(Kind::Undefined), m_String() {
-        Assign(other);
-    }
-
-    ObjectModule::Value::Value(Value &&other) noexcept : m_Scalar(), m_Kind(Kind::Undefined), m_String() {
-        Assign(std::move(other));
-    }
-
-    ObjectModule::Value &ObjectModule::Value::operator=(const Value &other) {
-        if (this != &other) {
-            Assign(other);
-        }
-        return *this;
-    }
-
-    ObjectModule::Value &ObjectModule::Value::operator=(Value &&other) noexcept {
-        if (this != &other) {
-            Assign(std::move(other));
-        }
-        return *this;
-    }
-
-    ObjectModule::Value::~Value() = default;
-
-    ObjectModule::Value ObjectModule::Value::Undefined() {
-        Value v;
-        v.Reset();
-        return v;
-    }
-
-    ObjectModule::Value ObjectModule::Value::FromBoolean(bool v) {
-        Value value;
-        value.m_Kind = Kind::Boolean;
-        value.m_Scalar.booleanValue = v;
-        value.m_String.clear();
-        return value;
-    }
-
-    ObjectModule::Value ObjectModule::Value::FromInt(std::int64_t v) {
-        Value value;
-        value.m_Kind = Kind::Int64;
-        value.m_Scalar.intValue = v;
-        value.m_String.clear();
-        return value;
-    }
-
-    ObjectModule::Value ObjectModule::Value::FromDouble(double v) {
-        Value value;
-        value.m_Kind = Kind::Double;
-        value.m_Scalar.doubleValue = v;
-        value.m_String.clear();
-        return value;
-    }
-
-    ObjectModule::Value ObjectModule::Value::FromHandle(Handle v) {
-        Value value;
-        value.m_Kind = Kind::Handle;
-        value.m_Scalar.handleValue = v;
-        value.m_String.clear();
-        return value;
-    }
-
-    ObjectModule::Value ObjectModule::Value::FromString(std::string_view text) {
-        Value value;
-        value.m_Kind = Kind::String;
-        value.m_Scalar.handleValue = 0;
-        value.m_String.assign(text.data(), text.size());
-        return value;
-    }
-
-    bool ObjectModule::Value::IsUndefined() const noexcept {
-        return m_Kind == Kind::Undefined;
-    }
-
-    bool ObjectModule::Value::IsBoolean() const noexcept {
-        return m_Kind == Kind::Boolean;
-    }
-
-    bool ObjectModule::Value::IsInt() const noexcept {
-        return m_Kind == Kind::Int64;
-    }
-
-    bool ObjectModule::Value::IsDouble() const noexcept {
-        return m_Kind == Kind::Double;
-    }
-
-    bool ObjectModule::Value::IsHandle() const noexcept {
-        return m_Kind == Kind::Handle;
-    }
-
-    bool ObjectModule::Value::IsString() const noexcept {
-        return m_Kind == Kind::String;
-    }
-
-    bool ObjectModule::Value::Boolean() const noexcept {
-        return m_Scalar.booleanValue;
-    }
-
-    std::int64_t ObjectModule::Value::Int() const noexcept {
-        return m_Scalar.intValue;
-    }
-
-    double ObjectModule::Value::Double() const noexcept {
-        return m_Scalar.doubleValue;
-    }
-
-    ObjectModule::Handle ObjectModule::Value::HandleValue() const noexcept {
-        return m_Scalar.handleValue;
-    }
-
-    std::string_view ObjectModule::Value::String() const noexcept {
-        return m_String;
-    }
-
-    void ObjectModule::Value::Assign(const Value &other) {
-        m_Kind = other.m_Kind;
-        switch (other.m_Kind) {
-            case Kind::Undefined:
-                m_Scalar.handleValue = 0;
-                m_String.clear();
-                break;
-            case Kind::Boolean:
-                m_Scalar.booleanValue = other.m_Scalar.booleanValue;
-                m_String.clear();
-                break;
-            case Kind::Int64:
-                m_Scalar.intValue = other.m_Scalar.intValue;
-                m_String.clear();
-                break;
-            case Kind::Double:
-                m_Scalar.doubleValue = other.m_Scalar.doubleValue;
-                m_String.clear();
-                break;
-            case Kind::Handle:
-                m_Scalar.handleValue = other.m_Scalar.handleValue;
-                m_String.clear();
-                break;
-            case Kind::String:
-                m_Scalar.handleValue = 0;
-                m_String = other.m_String;
-                break;
-        }
-    }
-
-    void ObjectModule::Value::Assign(Value &&other) noexcept {
-        m_Kind = other.m_Kind;
-        switch (other.m_Kind) {
-            case Kind::Undefined:
-                m_Scalar.handleValue = 0;
-                m_String.clear();
-                break;
-            case Kind::Boolean:
-                m_Scalar.booleanValue = other.m_Scalar.booleanValue;
-                m_String.clear();
-                break;
-            case Kind::Int64:
-                m_Scalar.intValue = other.m_Scalar.intValue;
-                m_String.clear();
-                break;
-            case Kind::Double:
-                m_Scalar.doubleValue = other.m_Scalar.doubleValue;
-                m_String.clear();
-                break;
-            case Kind::Handle:
-                m_Scalar.handleValue = other.m_Scalar.handleValue;
-                m_String.clear();
-                break;
-            case Kind::String:
-                m_Scalar.handleValue = 0;
-                m_String = std::move(other.m_String);
-                break;
-        }
-        other.m_Kind = Kind::Undefined;
-        other.m_Scalar.handleValue = 0;
-        other.m_String.clear();
-    }
-
-    void ObjectModule::Value::Reset() noexcept {
-        m_Kind = Kind::Undefined;
-        m_Scalar.handleValue = 0;
-        m_String.clear();
-    }
-
-    bool ObjectModule::Value::Equals(const Value &other) const noexcept {
-        if (m_Kind != other.m_Kind) {
-            return false;
-        }
-        switch (m_Kind) {
-            case Kind::Undefined:
-                return true;
-            case Kind::Boolean:
-                return m_Scalar.booleanValue == other.m_Scalar.booleanValue;
-            case Kind::Int64:
-                return m_Scalar.intValue == other.m_Scalar.intValue;
-            case Kind::Double:
-                return m_Scalar.doubleValue == other.m_Scalar.doubleValue;
-            case Kind::Handle:
-                return m_Scalar.handleValue == other.m_Scalar.handleValue;
-            case Kind::String:
-                return m_String == other.m_String;
-        }
-        return false;
-    }
     ObjectModule::ObjectModule()
         : m_Runtime(nullptr),
           m_Subsystems(nullptr),
@@ -796,7 +591,7 @@ namespace spectre::es2025 {
             if (object.frozen) {
                 return StatusCode::InvalidArgument;
             }
-            if (!IsWritable(slot.attributes) && !slot.value.Equals(descriptor.value)) {
+            if (!IsWritable(slot.attributes) && !slot.value.SameValueZero(descriptor.value)) {
                 return StatusCode::InvalidArgument;
             }
             if (!IsConfigurable(slot.attributes)) {
@@ -807,7 +602,7 @@ namespace spectre::es2025 {
                     return StatusCode::InvalidArgument;
                 }
             }
-            slot.value.Assign(descriptor.value);
+            slot.value = descriptor.value;
             slot.attributes = EncodeAttributes(descriptor.enumerable, descriptor.configurable, descriptor.writable);
             Touch(object);
             if (collision) {
@@ -826,7 +621,7 @@ namespace spectre::es2025 {
         auto &slot = object.properties[propertyIndex];
         slot.hash = hash;
         slot.key.assign(key.begin(), key.end());
-        slot.value.Assign(descriptor.value);
+        slot.value = descriptor.value;
         slot.attributes = EncodeAttributes(descriptor.enumerable, descriptor.configurable, descriptor.writable);
         slot.active = true;
         object.buckets[bucket] = propertyIndex;
@@ -850,10 +645,10 @@ namespace spectre::es2025 {
             if (object.frozen) {
                 return StatusCode::InvalidArgument;
             }
-            if (!IsWritable(slot.attributes) && !slot.value.Equals(value)) {
+            if (!IsWritable(slot.attributes) && !slot.value.SameValueZero(value)) {
                 return StatusCode::InvalidArgument;
             }
-            slot.value.Assign(value);
+            slot.value = value;
             Touch(object);
             if (collision) {
                 m_Metrics.collisions += 1;
@@ -1023,5 +818,6 @@ namespace spectre::es2025 {
         return static_cast<std::uint32_t>((handle >> 32) & 0xffffffffull);
     }
 }
+
 
 

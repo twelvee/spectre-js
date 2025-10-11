@@ -1750,13 +1750,13 @@ namespace {
         ok &= ExpectStatus(status, StatusCode::Ok, "Push number");
         status = arrayModule->PushString(handle, "alpha");
         ok &= ExpectStatus(status, StatusCode::Ok, "Push string");
-        spectre::es2025::ArrayModule::Value value;
+        spectre::es2025::Value value;
         status = arrayModule->Get(handle, 0, value);
         ok &= ExpectStatus(status, StatusCode::Ok, "Get first element");
-        ok &= ExpectTrue(value.kind == spectre::es2025::ArrayModule::Value::Kind::Number, "Value kind number");
+        ok &= ExpectTrue(value.kind == spectre::es2025::Value::Kind::Number, "Value kind number");
         status = arrayModule->Get(handle, 1, value);
         ok &= ExpectStatus(status, StatusCode::Ok, "Get second element");
-        ok &= ExpectTrue(value.kind == spectre::es2025::ArrayModule::Value::Kind::String, "Value kind string");
+        ok &= ExpectTrue(value.kind == spectre::es2025::Value::Kind::String, "Value kind string");
         ok &= ExpectTrue(arrayModule->Length(handle) == 2, "Length two");
         const auto &metrics = arrayModule->GetMetrics();
         ok &= ExpectTrue(metrics.denseCount >= 1, "Dense count tracked");
@@ -1779,13 +1779,13 @@ namespace {
         spectre::es2025::ArrayModule::Handle handle = 0;
         auto status = arrayModule->CreateDense("dense-to-sparse", 4, handle);
         ok &= ExpectStatus(status, StatusCode::Ok, "Create dense");
-        status = arrayModule->Set(handle, 0, spectre::es2025::ArrayModule::Value(10.0));
+        status = arrayModule->Set(handle, 0, spectre::es2025::Value::Number(10.0));
         ok &= ExpectStatus(status, StatusCode::Ok, "Set base value");
-        status = arrayModule->Set(handle, 64, spectre::es2025::ArrayModule::Value("tail"));
+        status = arrayModule->Set(handle, 64, spectre::es2025::Value::String("tail"));
         ok &= ExpectStatus(status, StatusCode::Ok, "Set sparse index");
         ok &= ExpectTrue(arrayModule->KindOf(handle) == spectre::es2025::ArrayModule::StorageKind::Sparse,
                          "Converted to sparse");
-        spectre::es2025::ArrayModule::Value sparseValue;
+        spectre::es2025::Value sparseValue;
         ok &= ExpectTrue(arrayModule->Length(handle) >= 65, "Sparse length expanded");
         status = arrayModule->SortLexicographic(handle, true);
         ok &= ExpectStatus(status, StatusCode::Ok, "Sort lexicographic");
@@ -1820,12 +1820,12 @@ namespace {
         ok &= ExpectStatus(arrayModule->PushNumber(b, 2.0), StatusCode::Ok, "Push into b");
         ok &= ExpectStatus(arrayModule->Concat(a, b), StatusCode::Ok, "Concat arrays");
         ok &= ExpectTrue(arrayModule->Length(a) == 5, "Concat length");
-        std::vector<spectre::es2025::ArrayModule::Value> slice;
+        std::vector<spectre::es2025::Value> slice;
         ok &= ExpectStatus(arrayModule->Slice(a, 1, 4, slice), StatusCode::Ok, "Slice values");
         ok &= ExpectTrue(slice.size() == 3, "Slice size");
         ok &= ExpectStatus(arrayModule->SortNumeric(a, true), StatusCode::Ok, "Sort numeric");
         std::size_t index = 0;
-        ok &= ExpectStatus(arrayModule->BinarySearch(a, spectre::es2025::ArrayModule::Value(4.0), true, index),
+        ok &= ExpectStatus(arrayModule->BinarySearch(a, spectre::es2025::Value::Number(4.0), true, index),
                            StatusCode::Ok, "Binary search value");
         ok &= ExpectTrue(index < arrayModule->Length(a), "Binary search index range");
         return ok;
@@ -1857,8 +1857,8 @@ namespace {
         ok &= ExpectTrue(arrayModule->KindOf(clone) == spectre::es2025::ArrayModule::StorageKind::Dense,
                          "Clone dense kind");
         ok &= ExpectTrue(arrayModule->Length(clone) == arrayModule->Length(original), "Clone length");
-        spectre::es2025::ArrayModule::Value value;
-        std::vector<spectre::es2025::ArrayModule::Value> cloneSlice;
+        spectre::es2025::Value value;
+        std::vector<spectre::es2025::Value> cloneSlice;
         ok &= ExpectStatus(arrayModule->Slice(clone, 0, arrayModule->Length(original), cloneSlice), StatusCode::Ok,
                            "Clone slice status");
         ok &= ExpectTrue(cloneSlice.size() == arrayModule->Length(original), "Clone slice size");
@@ -1871,7 +1871,7 @@ namespace {
         }
         ok &= ExpectTrue(cloneHasPayload, "Clone payload copied");
         ok &= ExpectStatus(arrayModule->Get(clone, 1, value), StatusCode::Ok, "Clone element");
-        ok &= ExpectTrue(value.kind == spectre::es2025::ArrayModule::Value::Kind::String, "Clone value kind");
+        ok &= ExpectTrue(value.kind == spectre::es2025::Value::Kind::String, "Clone value kind");
         ok &= ExpectStatus(arrayModule->Clear(original), StatusCode::Ok, "Clear source");
         ok &= ExpectTrue(arrayModule->Length(original) == 0, "Source cleared");
         const auto &metrics = arrayModule->GetMetrics();
@@ -2473,7 +2473,7 @@ namespace {
         spectre::es2025::ObjectModule::Handle prototype = 0;
         ok &= ExpectStatus(objectModule->Create("test.prototype", 0, prototype), StatusCode::Ok, "Create prototype");
         spectre::es2025::ObjectModule::PropertyDescriptor descriptor;
-        descriptor.value = spectre::es2025::ObjectModule::Value::FromString("base");
+        descriptor.value = spectre::es2025::Value::String("base");
         descriptor.enumerable = true;
         descriptor.configurable = true;
         descriptor.writable = true;
@@ -2482,12 +2482,12 @@ namespace {
         spectre::es2025::ObjectModule::Handle instance = 0;
         ok &= ExpectStatus(objectModule->Create("test.instance", prototype, instance), StatusCode::Ok,
                            "Create instance");
-        ok &= ExpectStatus(objectModule->Set(instance, "hp", spectre::es2025::ObjectModule::Value::FromInt(75)),
+        ok &= ExpectStatus(objectModule->Set(instance, "hp", spectre::es2025::Value::Int64(75)),
                            StatusCode::Ok, "Set instance property");
-        spectre::es2025::ObjectModule::Value value;
+        spectre::es2025::Value value;
         ok &= ExpectStatus(objectModule->Get(instance, "hp", value), StatusCode::Ok, "Get instance property");
         ok &= ExpectTrue(value.IsInt() && value.Int() == 75, "Instance value stored");
-        spectre::es2025::ObjectModule::Value protoValue;
+        spectre::es2025::Value protoValue;
         ok &= ExpectStatus(objectModule->Get(instance, "type", protoValue), StatusCode::Ok, "Prototype lookup");
         ok &= ExpectTrue(protoValue.IsString() && protoValue.String() == "base", "Prototype value accessible");
         std::vector<std::string> keys;
@@ -2526,7 +2526,7 @@ namespace {
         }
         spectre::es2025::ObjectModule::Handle target = 0;
         ok &= ExpectStatus(objectModule->Create("proxy.target", 0, target), StatusCode::Ok, "Create target");
-        ok &= ExpectStatus(objectModule->Set(target, "count", spectre::es2025::ObjectModule::Value::FromInt(1)),
+        ok &= ExpectStatus(objectModule->Set(target, "count", spectre::es2025::Value::Int64(1)),
                            StatusCode::Ok, "Seed target count");
         struct TrapState {
             int gets;
@@ -2535,14 +2535,14 @@ namespace {
         } state{0, 0, 0};
         spectre::es2025::ProxyModule::TrapTable traps{};
         traps.get = [](spectre::es2025::ObjectModule &objects, spectre::es2025::ObjectModule::Handle handle,
-                       std::string_view key, spectre::es2025::ObjectModule::Value &outValue,
+                       std::string_view key, spectre::es2025::Value &outValue,
                        void *userdata) -> StatusCode {
             auto *stats = static_cast<TrapState *>(userdata);
             stats->gets += 1;
             return objects.Get(handle, key, outValue);
         };
         traps.set = [](spectre::es2025::ObjectModule &objects, spectre::es2025::ObjectModule::Handle handle,
-                       std::string_view key, const spectre::es2025::ObjectModule::Value &value,
+                       std::string_view key, const spectre::es2025::Value &value,
                        void *userdata) -> StatusCode {
             auto *stats = static_cast<TrapState *>(userdata);
             stats->sets += 1;
@@ -2557,10 +2557,10 @@ namespace {
         traps.userdata = &state;
         spectre::es2025::ProxyModule::Handle proxy = 0;
         ok &= ExpectStatus(proxyModule->Create(target, traps, proxy), StatusCode::Ok, "Create proxy");
-        spectre::es2025::ObjectModule::Value value;
+        spectre::es2025::Value value;
         ok &= ExpectStatus(proxyModule->Get(proxy, "count", value), StatusCode::Ok, "Proxy get");
         ok &= ExpectTrue(value.IsInt() && value.Int() == 1, "Proxy get value");
-        ok &= ExpectStatus(proxyModule->Set(proxy, "count", spectre::es2025::ObjectModule::Value::FromInt(5)),
+        ok &= ExpectStatus(proxyModule->Set(proxy, "count", spectre::es2025::Value::Int64(5)),
                            StatusCode::Ok, "Proxy set");
         bool hasCount = false;
         ok &= ExpectStatus(proxyModule->Has(proxy, "count", hasCount), StatusCode::Ok, "Proxy has");
@@ -2572,7 +2572,7 @@ namespace {
         ok &= ExpectStatus(proxyModule->OwnKeys(proxy, keys), StatusCode::Ok, "Proxy keys");
         ok &= ExpectTrue(keys.empty(), "Proxy keys empty");
         ok &= ExpectStatus(proxyModule->Revoke(proxy), StatusCode::Ok, "Proxy revoke");
-        spectre::es2025::ObjectModule::Value revoked;
+        spectre::es2025::Value revoked;
         ok &= ExpectStatus(proxyModule->Get(proxy, "count", revoked), StatusCode::InvalidArgument, "Revoked proxy");
         ok &= ExpectStatus(proxyModule->Destroy(proxy), StatusCode::Ok, "Destroy proxy");
         ok &= ExpectStatus(objectModule->Destroy(target), StatusCode::Ok, "Destroy target");
@@ -2598,24 +2598,24 @@ namespace {
         }
         spectre::es2025::MapModule::Handle handle = 0;
         ok &= ExpectStatus(mapModule->Create("test.map", handle), StatusCode::Ok, "Create map");
-        ok &= ExpectStatus(mapModule->Set(handle, spectre::es2025::MapModule::Value::FromString("alpha"),
-                                          spectre::es2025::MapModule::Value::FromInt(10)), StatusCode::Ok, "Set alpha");
-        ok &= ExpectStatus(mapModule->Set(handle, spectre::es2025::MapModule::Value::FromString("beta"),
-                                          spectre::es2025::MapModule::Value::FromInt(20)), StatusCode::Ok, "Set beta");
-        ok &= ExpectStatus(mapModule->Set(handle, spectre::es2025::MapModule::Value::FromString("gamma"),
-                                          spectre::es2025::MapModule::Value::FromInt(30)), StatusCode::Ok, "Set gamma");
+        ok &= ExpectStatus(mapModule->Set(handle, spectre::es2025::Value::String("alpha"),
+                                          spectre::es2025::Value::Int64(10)), StatusCode::Ok, "Set alpha");
+        ok &= ExpectStatus(mapModule->Set(handle, spectre::es2025::Value::String("beta"),
+                                          spectre::es2025::Value::Int64(20)), StatusCode::Ok, "Set beta");
+        ok &= ExpectStatus(mapModule->Set(handle, spectre::es2025::Value::String("gamma"),
+                                          spectre::es2025::Value::Int64(30)), StatusCode::Ok, "Set gamma");
         ok &= ExpectTrue(mapModule->Size(handle) == 3, "Map size after inserts");
-        spectre::es2025::MapModule::Value value;
-        ok &= ExpectStatus(mapModule->Get(handle, spectre::es2025::MapModule::Value::FromString("beta"), value),
+        spectre::es2025::Value value;
+        ok &= ExpectStatus(mapModule->Get(handle, spectre::es2025::Value::String("beta"), value),
                            StatusCode::Ok, "Get beta");
         ok &= ExpectTrue(value.IsInt() && value.Int() == 20, "Beta value correct");
-        std::vector<spectre::es2025::MapModule::Value> keys;
+        std::vector<spectre::es2025::Value> keys;
         ok &= ExpectStatus(mapModule->Keys(handle, keys), StatusCode::Ok, "Enumerate keys");
         ok &= ExpectTrue(keys.size() == 3, "Key count");
         ok &= ExpectTrue(keys[0].IsString() && keys[0].String() == "alpha", "First key order");
         ok &= ExpectTrue(keys[1].IsString() && keys[1].String() == "beta", "Second key order");
         bool removed = false;
-        ok &= ExpectStatus(mapModule->Delete(handle, spectre::es2025::MapModule::Value::FromString("beta"), removed),
+        ok &= ExpectStatus(mapModule->Delete(handle, spectre::es2025::Value::String("beta"), removed),
                            StatusCode::Ok, "Delete beta");
         ok &= ExpectTrue(removed, "Beta removed flag");
         ok &= ExpectTrue(mapModule->Size(handle) == 2, "Map size after delete");
@@ -2648,17 +2648,17 @@ namespace {
         }
         spectre::es2025::SetModule::Handle handle = 0;
         ok &= ExpectStatus(setModule->Create("test.set", handle), StatusCode::Ok, "Create set");
-        using SetValue = spectre::es2025::SetModule::Value;
-        ok &= ExpectStatus(setModule->Add(handle, SetValue::FromInt(42)), StatusCode::Ok, "Add int");
-        ok &= ExpectStatus(setModule->Add(handle, SetValue::FromInt(42)), StatusCode::Ok, "Add duplicate");
+        using SetValue = spectre::es2025::Value;
+        ok &= ExpectStatus(setModule->Add(handle, SetValue::Int64(42)), StatusCode::Ok, "Add int");
+        ok &= ExpectStatus(setModule->Add(handle, SetValue::Int64(42)), StatusCode::Ok, "Add duplicate");
         ok &= ExpectTrue(setModule->Size(handle) == 1, "Duplicate ignored");
-        ok &= ExpectStatus(setModule->Add(handle, SetValue::FromString("alpha")), StatusCode::Ok, "Add string");
-        ok &= ExpectStatus(setModule->Add(handle, SetValue::FromDouble(3.5)), StatusCode::Ok, "Add double");
+        ok &= ExpectStatus(setModule->Add(handle, SetValue::String("alpha")), StatusCode::Ok, "Add string");
+        ok &= ExpectStatus(setModule->Add(handle, SetValue::Number(3.5)), StatusCode::Ok, "Add double");
         ok &= ExpectTrue(setModule->Size(handle) == 3, "Set size after additions");
-        ok &= ExpectTrue(setModule->Has(handle, SetValue::FromString("alpha")), "Set contains string");
-        ok &= ExpectTrue(!setModule->Has(handle, SetValue::FromBoolean(true)), "Missing value lookup");
+        ok &= ExpectTrue(setModule->Has(handle, SetValue::String("alpha")), "Set contains string");
+        ok &= ExpectTrue(!setModule->Has(handle, SetValue::Boolean(true)), "Missing value lookup");
         bool removed = false;
-        ok &= ExpectStatus(setModule->Delete(handle, SetValue::FromInt(42), removed), StatusCode::Ok, "Delete value");
+        ok &= ExpectStatus(setModule->Delete(handle, SetValue::Int64(42), removed), StatusCode::Ok, "Delete value");
         ok &= ExpectTrue(removed, "Delete reported true");
         ok &= ExpectTrue(setModule->Size(handle) == 2, "Size after delete");
         std::vector<SetValue> values;
@@ -2668,7 +2668,7 @@ namespace {
         ok &= ExpectStatus(setModule->Entries(handle, entries), StatusCode::Ok, "Collect entries");
         ok &= ExpectTrue(entries.size() == 2, "Entries count");
         if (!entries.empty()) {
-            ok &= ExpectTrue(entries.front().first.Equals(entries.front().second), "Entries mirror values");
+            ok &= ExpectTrue(entries.front().first.SameValueZero(entries.front().second), "Entries mirror values");
         }
         ok &= ExpectStatus(setModule->Clear(handle), StatusCode::Ok, "Clear set");
         ok &= ExpectTrue(setModule->Size(handle) == 0, "Cleared size");
@@ -2739,13 +2739,13 @@ namespace {
         spectre::es2025::ObjectModule::Handle target = 0;
         ok &= ExpectStatus(objectModule->Create("test.reflect.target", 0, target), StatusCode::Ok, "Create target");
         spectre::es2025::ObjectModule::PropertyDescriptor descriptor{};
-        descriptor.value = spectre::es2025::ObjectModule::Value::FromInt(42);
+        descriptor.value = spectre::es2025::Value::Int64(42);
         descriptor.enumerable = true;
         descriptor.configurable = false;
         descriptor.writable = false;
         ok &= ExpectStatus(reflectModule->DefineProperty(target, "answer", descriptor), StatusCode::Ok,
                            "Define property");
-        spectre::es2025::ObjectModule::Value value;
+        spectre::es2025::Value value;
         ok &= ExpectStatus(reflectModule->Get(target, "answer", value), StatusCode::Ok, "Get property");
         ok &= ExpectTrue(value.IsInt() && value.Int() == 42, "Reflect.get returns expected value");
         ok &= ExpectTrue(reflectModule->Has(target, "answer"), "Reflect.has returns true");
@@ -2772,7 +2772,7 @@ namespace {
         ok &= ExpectStatus(reflectModule->PreventExtensions(target), StatusCode::Ok, "Prevent extensions");
         ok &= ExpectTrue(!reflectModule->IsExtensible(target), "Not extensible after preventExtensions");
         spectre::es2025::ObjectModule::PropertyDescriptor descriptor2{};
-        descriptor2.value = spectre::es2025::ObjectModule::Value::FromInt(7);
+        descriptor2.value = spectre::es2025::Value::Int64(7);
         descriptor2.enumerable = true;
         descriptor2.configurable = true;
         descriptor2.writable = true;
@@ -2953,12 +2953,12 @@ namespace {
         spectre::es2025::ObjectModule::Handle keyB = 0;
         ok &= ExpectStatus(objectModule->Create("test.weakmap.keyA", 0, keyA), StatusCode::Ok, "Create keyA");
         ok &= ExpectStatus(objectModule->Create("test.weakmap.keyB", 0, keyB), StatusCode::Ok, "Create keyB");
-        ok &= ExpectStatus(weakMapModule->Set(handle, keyA, spectre::es2025::WeakMapModule::Value::FromInt(5)),
+        ok &= ExpectStatus(weakMapModule->Set(handle, keyA, spectre::es2025::Value::Int64(5)),
                            StatusCode::Ok, "Set keyA");
-        ok &= ExpectStatus(weakMapModule->Set(handle, keyB, spectre::es2025::WeakMapModule::Value::FromInt(9)),
+        ok &= ExpectStatus(weakMapModule->Set(handle, keyB, spectre::es2025::Value::Int64(9)),
                            StatusCode::Ok, "Set keyB");
         ok &= ExpectTrue(weakMapModule->Size(handle) == 2, "Weak map size");
-        spectre::es2025::WeakMapModule::Value value;
+        spectre::es2025::Value value;
         ok &= ExpectStatus(weakMapModule->Get(handle, keyB, value), StatusCode::Ok, "Get keyB");
         ok &= ExpectTrue(value.IsInt() && value.Int() == 9, "KeyB value");
         ok &= ExpectStatus(objectModule->Destroy(keyA), StatusCode::Ok, "Destroy keyA");

@@ -83,7 +83,7 @@ namespace spectre::es2025 {
 
     StatusCode ReflectModule::Set(ObjectModule::Handle target,
                                   std::string_view key,
-                                  const ObjectModule::Value &value) {
+                                  const Value &value) {
         if (!m_ObjectModule) {
             m_Metrics.failedOps += 1;
             return StatusCode::InternalError;
@@ -100,7 +100,7 @@ namespace spectre::es2025 {
 
     StatusCode ReflectModule::Get(ObjectModule::Handle target,
                                   std::string_view key,
-                                  ObjectModule::Value &outValue) {
+                                  Value &outValue) {
         if (!m_ObjectModule) {
             outValue.Reset();
             m_Metrics.failedOps += 1;

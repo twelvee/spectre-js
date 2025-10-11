@@ -9,40 +9,12 @@
 #include "spectre/status.h"
 #include "spectre/config.h"
 #include "spectre/es2025/module.h"
+#include "spectre/es2025/value.h"
 
 namespace spectre::es2025 {
     class ArrayModule final : public Module {
     public:
         enum class StorageKind : std::uint8_t { Dense, Sparse };
-
-        struct Value {
-            enum class Kind : std::uint8_t { Undefined, Number, Boolean, String };
-
-            Value() noexcept;
-            explicit Value(double v) noexcept;
-            explicit Value(bool v) noexcept;
-            explicit Value(std::string_view v);
-            Value(const Value &other);
-            Value(Value &&other) noexcept;
-            Value &operator=(const Value &other);
-            Value &operator=(Value &&other) noexcept;
-            ~Value();
-
-            static Value Undefined() noexcept;
-
-            Kind kind;
-            double number;
-            bool booleanValue;
-            std::string text;
-
-            double Number(double fallback = 0.0) const noexcept;
-            bool Boolean(bool fallback = false) const noexcept;
-            std::string_view StringView() const noexcept;
-            bool Empty() const noexcept;
-            std::string ToString() const;
-            bool operator==(const Value &other) const noexcept;
-            bool operator!=(const Value &other) const noexcept;
-        };
 
         struct Metrics {
             std::size_t denseCount;
@@ -55,7 +27,17 @@ namespace spectre::es2025 {
             std::size_t compactions;
             std::size_t clones;
             std::uint64_t lastMutationFrame;
-            Metrics() noexcept;
+            Metrics() noexcept
+                : denseCount(0),
+                  sparseCount(0),
+                  denseCapacity(0),
+                  denseLength(0),
+                  sparseEntries(0),
+                  transitionsToSparse(0),
+                  transitionsToDense(0),
+                  compactions(0),
+                  clones(0),
+                  lastMutationFrame(0) {}
         };
 
         using Handle = std::uint64_t;

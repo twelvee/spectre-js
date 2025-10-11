@@ -8,6 +8,7 @@
 #include "spectre/status.h"
 #include "spectre/es2025/module.h"
 #include "spectre/es2025/modules/object_module.h"
+#include "spectre/es2025/value.h"
 
 namespace spectre::es2025 {
     class ReflectModule final : public Module {
@@ -46,11 +47,11 @@ namespace spectre::es2025 {
 
         StatusCode Set(ObjectModule::Handle target,
                        std::string_view key,
-                       const ObjectModule::Value &value);
+                       const Value &value);
 
         StatusCode Get(ObjectModule::Handle target,
                        std::string_view key,
-                       ObjectModule::Value &outValue);
+                       Value &outValue);
 
         StatusCode DeleteProperty(ObjectModule::Handle target,
                                   std::string_view key,

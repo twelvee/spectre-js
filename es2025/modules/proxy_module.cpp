@@ -169,7 +169,7 @@ namespace spectre::es2025 {
         m_Metrics.revocations += 1;
         return StatusCode::Ok;
     }
-    StatusCode ProxyModule::Get(Handle handle, std::string_view key, ObjectModule::Value &outValue) {
+    StatusCode ProxyModule::Get(Handle handle, std::string_view key, Value &outValue) {
         outValue.Reset();
         auto *record = FindMutable(handle);
         if (!record) {
@@ -202,7 +202,7 @@ namespace spectre::es2025 {
         return status;
     }
 
-    StatusCode ProxyModule::Set(Handle handle, std::string_view key, const ObjectModule::Value &value) {
+    StatusCode ProxyModule::Set(Handle handle, std::string_view key, const Value &value) {
         auto *record = FindMutable(handle);
         if (!record) {
             return StatusCode::NotFound;

@@ -8,6 +8,7 @@
 #include "spectre/config.h"
 #include "spectre/status.h"
 #include "spectre/es2025/modules/object_module.h"
+#include "spectre/es2025/value.h"
 
 namespace spectre::es2025 {
     class ProxyModule final : public Module {
@@ -15,8 +16,8 @@ namespace spectre::es2025 {
         using Handle = std::uint64_t;
 
         struct TrapTable {
-            using GetTrap = StatusCode (*)(ObjectModule &, ObjectModule::Handle, std::string_view, ObjectModule::Value &, void *);
-            using SetTrap = StatusCode (*)(ObjectModule &, ObjectModule::Handle, std::string_view, const ObjectModule::Value &, void *);
+            using GetTrap = StatusCode (*)(ObjectModule &, ObjectModule::Handle, std::string_view, Value &, void *);
+            using SetTrap = StatusCode (*)(ObjectModule &, ObjectModule::Handle, std::string_view, const Value &, void *);
             using HasTrap = StatusCode (*)(ObjectModule &, ObjectModule::Handle, std::string_view, bool &, void *);
             using DeleteTrap = StatusCode (*)(ObjectModule &, ObjectModule::Handle, std::string_view, bool &, void *);
             using KeysTrap = StatusCode (*)(ObjectModule &, ObjectModule::Handle, std::vector<std::string> &, void *);
@@ -57,8 +58,8 @@ namespace spectre::es2025 {
         StatusCode Destroy(Handle handle);
         StatusCode Revoke(Handle handle);
 
-        StatusCode Get(Handle handle, std::string_view key, ObjectModule::Value &outValue);
-        StatusCode Set(Handle handle, std::string_view key, const ObjectModule::Value &value);
+        StatusCode Get(Handle handle, std::string_view key, Value &outValue);
+        StatusCode Set(Handle handle, std::string_view key, const Value &value);
         StatusCode Has(Handle handle, std::string_view key, bool &outHas);
         StatusCode Delete(Handle handle, std::string_view key, bool &outDeleted);
         StatusCode OwnKeys(Handle handle, std::vector<std::string> &keys);

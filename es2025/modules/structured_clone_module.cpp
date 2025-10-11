@@ -13,7 +13,7 @@ namespace spectre::es2025 {
         constexpr std::string_view kSummary = "Structured cloning algorithms for host messaging and persistence.";
         constexpr std::string_view kReference = "WHATWG HTML Section 2.7";
         constexpr std::uint32_t kHeaderMagic = 0x4e4c4353u; // "SCLN"
-        constexpr std::uint32_t kBinaryVersion = 1;
+        constexpr std::uint32_t kBinaryVersion = 2;
         constexpr std::string_view kArrayBufferCloneLabel = "structured.clone.buffer";
         constexpr std::string_view kSharedBufferCloneLabel = "structured.clone.shared";
         constexpr std::string_view kTypedArrayCloneLabel = "structured.clone.view";
@@ -90,17 +90,43 @@ namespace spectre::es2025 {
                 node.kind = Kind::Undefined;
                 node.primitive = Value::Undefined();
                 break;
-            case Value::Kind::Number:
-                node.kind = Kind::Number;
-                node.primitive = Value::Number(value.number);
+            case Value::Kind::Null:
+                node.kind = Kind::Null;
+                node.primitive = Value::Null();
                 break;
             case Value::Kind::Boolean:
                 node.kind = Kind::Boolean;
-                node.primitive = Value::Boolean(value.booleanValue);
+                node.primitive = Value::Boolean(value.AsBoolean());
+                break;
+            case Value::Kind::Int32:
+            case Value::Kind::Int64:
+            case Value::Kind::Number:
+                node.kind = Kind::Number;
+                node.primitive = Value::Number(value.AsNumber());
+                break;
+            case Value::Kind::BigInt:
+                node.kind = Kind::BigInt;
+                node.primitive = Value::BigInt(value.AsBigInt());
                 break;
             case Value::Kind::String:
                 node.kind = Kind::String;
-                node.primitive = Value::String(value.text);
+                node.primitive = Value::String(value.AsString());
+                break;
+            case Value::Kind::Symbol:
+                node.kind = Kind::Symbol;
+                node.primitive = Value::Symbol(value.AsSymbol());
+                break;
+            case Value::Kind::Handle:
+                node.kind = Kind::Handle;
+                node.primitive = value;
+                break;
+            case Value::Kind::External:
+                node.kind = Kind::External;
+                node.primitive = value;
+                break;
+            default:
+                node.kind = Kind::Undefined;
+                node.primitive = Value::Undefined();
                 break;
         }
         return node;
@@ -207,6 +233,8 @@ namespace spectre::es2025 {
           m_ArrayBufferModule(nullptr),
           m_SharedArrayBufferModule(nullptr),
           m_TypedArrayModule(nullptr),
+          m_BigIntModule(nullptr),
+          m_SymbolModule(nullptr),
           m_GpuEnabled(false),
           m_Initialized(false),
           m_CurrentFrame(0),
@@ -340,9 +368,73 @@ namespace spectre::es2025 {
 
         switch (input.kind) {
             case Node::Kind::Undefined:
+            case Node::Kind::Null:
             case Node::Kind::Boolean:
             case Node::Kind::Number:
             case Node::Kind::String:
+                return StatusCode::Ok;
+            case Node::Kind::BigInt: {
+                if (!m_BigIntModule) {
+                    return StatusCode::NotFound;
+                }
+                auto source = input.primitive.AsBigInt();
+                if (source != 0) {
+                    BigIntModule::Handle cloneHandle = 0;
+                    auto status = m_BigIntModule->Clone(
+                        source,
+                        input.label.empty() ? "structured.clone.bigint" : input.label,
+                        cloneHandle);
+                    if (status != StatusCode::Ok) {
+                        return status;
+                    }
+                    outClone.primitive = Value::BigInt(cloneHandle);
+                }
+                return StatusCode::Ok;
+            }
+            case Node::Kind::Symbol: {
+                if (!m_SymbolModule) {
+                    return StatusCode::NotFound;
+                }
+                auto source = input.primitive.AsSymbol();
+                if (source == 0) {
+                    return StatusCode::Ok;
+                }
+                if (m_SymbolModule->IsPinned(source)) {
+                    for (std::uint8_t index = 0; index < static_cast<std::uint8_t>(SymbolModule::WellKnown::Count); ++index) {
+                        auto kind = static_cast<SymbolModule::WellKnown>(index);
+                        if (m_SymbolModule->WellKnownHandle(kind) == source) {
+                            outClone.primitive = Value::Symbol(source);
+                            return StatusCode::Ok;
+                        }
+                    }
+                    outClone.primitive = Value::Symbol(source);
+                    return StatusCode::Ok;
+                }
+                if (m_SymbolModule->IsGlobal(source)) {
+                    std::string key;
+                    auto status = m_SymbolModule->KeyFor(source, key);
+                    if (status != StatusCode::Ok) {
+                        return status;
+                    }
+                    SymbolModule::Handle clone = 0;
+                    status = m_SymbolModule->CreateGlobal(key, clone);
+                    if (status != StatusCode::Ok) {
+                        return status;
+                    }
+                    outClone.primitive = Value::Symbol(clone);
+                    return StatusCode::Ok;
+                }
+                auto description = std::string(m_SymbolModule->Description(source));
+                SymbolModule::Handle clone = 0;
+                auto status = m_SymbolModule->Create(description, clone);
+                if (status != StatusCode::Ok) {
+                    return status;
+                }
+                outClone.primitive = Value::Symbol(clone);
+                return StatusCode::Ok;
+            }
+            case Node::Kind::Handle:
+            case Node::Kind::External:
                 return StatusCode::Ok;
             case Node::Kind::Array:
                 return CloneArray(input, outClone, context);
@@ -615,12 +707,21 @@ namespace spectre::es2025 {
 
         switch (node.kind) {
             case Node::Kind::Undefined:
+            case Node::Kind::Null:
                 return StatusCode::Ok;
             case Node::Kind::Boolean:
             case Node::Kind::Number:
             case Node::Kind::String:
                 WritePrimitive(node);
                 return StatusCode::Ok;
+            case Node::Kind::BigInt:
+                return WriteBigInt(node);
+            case Node::Kind::Symbol:
+                return WriteSymbol(node);
+            case Node::Kind::Handle:
+                return WriteHandleNode(node);
+            case Node::Kind::External:
+                return WriteExternal(node);
             case Node::Kind::Array: {
                 WriteUint32(static_cast<std::uint32_t>(node.arrayItems.size()));
                 for (const auto &item: node.arrayItems) {
@@ -799,6 +900,78 @@ namespace spectre::es2025 {
         WriteUint64(bits);
     }
 
+    StatusCode StructuredCloneModule::WriteBigInt(const Node &node) {
+        auto handle = node.primitive.AsBigInt();
+        WriteUint8(handle != 0 ? 1u : 0u);
+        if (handle == 0) {
+            return StatusCode::Ok;
+        }
+        if (!m_BigIntModule) {
+            return StatusCode::NotFound;
+        }
+        std::string decimal;
+        auto status = m_BigIntModule->ToDecimalString(handle, decimal);
+        if (status != StatusCode::Ok) {
+            return status;
+        }
+        WriteString(decimal);
+        return StatusCode::Ok;
+    }
+
+    StatusCode StructuredCloneModule::WriteSymbol(const Node &node) {
+        auto handle = node.primitive.AsSymbol();
+        if (handle == 0) {
+            WriteUint8(0u);
+            return StatusCode::Ok;
+        }
+        if (!m_SymbolModule) {
+            return StatusCode::NotFound;
+        }
+        if (m_SymbolModule->IsPinned(handle)) {
+            std::uint8_t index = static_cast<std::uint8_t>(SymbolModule::WellKnown::Count);
+            for (std::uint8_t candidate = 0; candidate < static_cast<std::uint8_t>(SymbolModule::WellKnown::Count); ++candidate) {
+                auto kind = static_cast<SymbolModule::WellKnown>(candidate);
+                if (m_SymbolModule->WellKnownHandle(kind) == handle) {
+                    index = candidate;
+                    break;
+                }
+            }
+            if (index < static_cast<std::uint8_t>(SymbolModule::WellKnown::Count)) {
+                WriteUint8(3u);
+                WriteUint8(index);
+                return StatusCode::Ok;
+            }
+        }
+        if (m_SymbolModule->IsGlobal(handle)) {
+            WriteUint8(2u);
+            std::string key;
+            auto status = m_SymbolModule->KeyFor(handle, key);
+            if (status != StatusCode::Ok) {
+                return status;
+            }
+            WriteString(key);
+            return StatusCode::Ok;
+        }
+        WriteUint8(1u);
+        auto description = std::string(m_SymbolModule->Description(handle));
+        WriteString(description);
+        return StatusCode::Ok;
+    }
+
+    StatusCode StructuredCloneModule::WriteHandleNode(const Node &node) {
+        WriteUint8(static_cast<std::uint8_t>(node.primitive.HandleTag()));
+        WriteUint64(node.primitive.AsHandle());
+        return StatusCode::Ok;
+    }
+
+    StatusCode StructuredCloneModule::WriteExternal(const Node &node) {
+        auto pointer = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(node.primitive.AsExternalPointer()));
+        WriteUint64(pointer);
+        WriteUint64(static_cast<std::uint64_t>(node.primitive.ExternalInfo()));
+        WriteUint8(static_cast<std::uint8_t>(node.primitive.ExternalTag()));
+        return StatusCode::Ok;
+    }
+
     StatusCode StructuredCloneModule::ReadNode(BinaryCursor &cursor, Node &outNode) {
         std::uint8_t kindByte = 0;
         if (!cursor.Read(kindByte)) {
@@ -817,6 +990,9 @@ namespace spectre::es2025 {
 
         switch (outNode.kind) {
             case Node::Kind::Undefined:
+                return StatusCode::Ok;
+            case Node::Kind::Null:
+                outNode.primitive = Value::Null();
                 return StatusCode::Ok;
             case Node::Kind::Boolean: {
                 std::uint8_t booleanByte = 0;
@@ -839,9 +1015,17 @@ namespace spectre::es2025 {
                 if (!cursor.Read(text)) {
                     return StatusCode::InvalidArgument;
                 }
-                outNode.primitive = Value(text);
+                outNode.primitive = Value::String(text);
                 return StatusCode::Ok;
             }
+            case Node::Kind::BigInt:
+                return ReadBigInt(cursor, outNode);
+            case Node::Kind::Symbol:
+                return ReadSymbol(cursor, outNode);
+            case Node::Kind::Handle:
+                return ReadHandle(cursor, outNode);
+            case Node::Kind::External:
+                return ReadExternal(cursor, outNode);
             case Node::Kind::Array:
                 return DeserializeArray(cursor, outNode);
             case Node::Kind::Object:
@@ -858,6 +1042,115 @@ namespace spectre::es2025 {
                 return DeserializeTypedArray(cursor, outNode);
         }
         return StatusCode::InvalidArgument;
+    }
+
+    StatusCode StructuredCloneModule::ReadBigInt(BinaryCursor &cursor, Node &outNode) {
+        std::uint8_t present = 0;
+        if (!cursor.Read(present)) {
+            return StatusCode::InvalidArgument;
+        }
+        if (present == 0) {
+            outNode.primitive = Value::BigInt(0);
+            return StatusCode::Ok;
+        }
+        if (!m_BigIntModule) {
+            return StatusCode::NotFound;
+        }
+        std::string decimal;
+        if (!cursor.Read(decimal)) {
+            return StatusCode::InvalidArgument;
+        }
+        BigIntModule::Handle handle = 0;
+        auto status = m_BigIntModule->CreateFromDecimal(outNode.label.empty() ? "structured.clone.bigint" : outNode.label, decimal, handle);
+        if (status != StatusCode::Ok) {
+            return status;
+        }
+        outNode.primitive = Value::BigInt(handle);
+        return StatusCode::Ok;
+    }
+
+    StatusCode StructuredCloneModule::ReadSymbol(BinaryCursor &cursor, Node &outNode) {
+        std::uint8_t kindByte = 0;
+        if (!cursor.Read(kindByte)) {
+            return StatusCode::InvalidArgument;
+        }
+        if (kindByte == 0) {
+            outNode.primitive = Value::Symbol(0);
+            return StatusCode::Ok;
+        }
+        if (!m_SymbolModule) {
+            return StatusCode::NotFound;
+        }
+        if (kindByte == 3) {
+            std::uint8_t index = 0;
+            if (!cursor.Read(index)) {
+                return StatusCode::InvalidArgument;
+            }
+            if (index >= static_cast<std::uint8_t>(SymbolModule::WellKnown::Count)) {
+                return StatusCode::InvalidArgument;
+            }
+            auto handle = m_SymbolModule->WellKnownHandle(static_cast<SymbolModule::WellKnown>(index));
+            outNode.primitive = Value::Symbol(handle);
+            return StatusCode::Ok;
+        }
+        if (kindByte == 2) {
+            std::string key;
+            if (!cursor.Read(key)) {
+                return StatusCode::InvalidArgument;
+            }
+            SymbolModule::Handle handle = 0;
+            auto status = m_SymbolModule->CreateGlobal(key, handle);
+            if (status != StatusCode::Ok) {
+                return status;
+            }
+            outNode.primitive = Value::Symbol(handle);
+            return StatusCode::Ok;
+        }
+        if (kindByte == 1) {
+            std::string description;
+            if (!cursor.Read(description)) {
+                return StatusCode::InvalidArgument;
+            }
+            SymbolModule::Handle handle = 0;
+            auto status = m_SymbolModule->Create(description, handle);
+            if (status != StatusCode::Ok) {
+                return status;
+            }
+            outNode.primitive = Value::Symbol(handle);
+            return StatusCode::Ok;
+        }
+        return StatusCode::InvalidArgument;
+    }
+
+    StatusCode StructuredCloneModule::ReadHandle(BinaryCursor &cursor, Node &outNode) {
+        std::uint8_t kindByte = 0;
+        if (!cursor.Read(kindByte)) {
+            return StatusCode::InvalidArgument;
+        }
+        std::uint64_t handleValue = 0;
+        if (!cursor.Read(handleValue)) {
+            return StatusCode::InvalidArgument;
+        }
+        outNode.primitive = Value::Handle(handleValue, static_cast<Value::HandleKind>(kindByte));
+        return StatusCode::Ok;
+    }
+
+    StatusCode StructuredCloneModule::ReadExternal(BinaryCursor &cursor, Node &outNode) {
+        std::uint64_t pointerBits = 0;
+        if (!cursor.Read(pointerBits)) {
+            return StatusCode::InvalidArgument;
+        }
+        std::uint64_t infoBits = 0;
+        if (!cursor.Read(infoBits)) {
+            return StatusCode::InvalidArgument;
+        }
+        std::uint8_t kindByte = 0;
+        if (!cursor.Read(kindByte)) {
+            return StatusCode::InvalidArgument;
+        }
+        auto pointer = reinterpret_cast<void *>(static_cast<std::uintptr_t>(pointerBits));
+        outNode.primitive = Value::External(pointer, static_cast<std::uintptr_t>(infoBits), static_cast<Value::ExternalKind>(kindByte));
+        return StatusCode::Ok;
     }
 
     StatusCode StructuredCloneModule::DeserializeArray(BinaryCursor &cursor, Node &outNode) {
@@ -1112,7 +1405,7 @@ namespace spectre::es2025 {
     }
 
     bool StructuredCloneModule::EnsureDependencies() {
-        if (m_ArrayBufferModule && m_SharedArrayBufferModule && m_TypedArrayModule) {
+        if (m_ArrayBufferModule && m_SharedArrayBufferModule && m_TypedArrayModule && m_BigIntModule && m_SymbolModule) {
             return true;
         }
         if (!m_Runtime) {
@@ -1131,6 +1424,15 @@ namespace spectre::es2025 {
             auto *module = environment.FindModule("TypedArray");
             m_TypedArrayModule = dynamic_cast<TypedArrayModule *>(module);
         }
-        return m_ArrayBufferModule != nullptr && m_SharedArrayBufferModule != nullptr && m_TypedArrayModule != nullptr;
+        if (!m_BigIntModule) {
+            auto *module = environment.FindModule("BigInt");
+            m_BigIntModule = dynamic_cast<BigIntModule *>(module);
+        }
+        if (!m_SymbolModule) {
+            auto *module = environment.FindModule("Symbol");
+            m_SymbolModule = dynamic_cast<SymbolModule *>(module);
+        }
+        return m_ArrayBufferModule != nullptr && m_SharedArrayBufferModule != nullptr &&
+               m_TypedArrayModule != nullptr && m_BigIntModule != nullptr && m_SymbolModule != nullptr;
     }
 }

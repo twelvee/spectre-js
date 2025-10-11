@@ -510,7 +510,7 @@ namespace {
     }
 
     void DemonstrateArrayModule(spectre::es2025::ArrayModule &arrayModule) {
-        using Value = spectre::es2025::ArrayModule::Value;
+        using Value = spectre::es2025::Value;
         spectre::es2025::ArrayModule::Handle metricsHandle = 0;
         if (arrayModule.CreateDense("demo.metrics", 8, metricsHandle) != spectre::StatusCode::Ok) {
             std::cout << "Array module demo unavailable" << std::endl;
@@ -1440,7 +1440,7 @@ void DemonstrateObjectModule(spectre::es2025::ObjectModule &objectModule) {
         return;
     }
     spectre::es2025::ObjectModule::PropertyDescriptor descriptor;
-    descriptor.value = spectre::es2025::ObjectModule::Value::FromString("entity");
+    descriptor.value = spectre::es2025::Value::String("entity");
     descriptor.enumerable = true;
     descriptor.configurable = true;
     descriptor.writable = true;
@@ -1451,8 +1451,8 @@ void DemonstrateObjectModule(spectre::es2025::ObjectModule &objectModule) {
         std::cout << "  object instance unavailable" << std::endl;
         return;
     }
-    objectModule.Set(instance, "hp", spectre::es2025::ObjectModule::Value::FromInt(240));
-    objectModule.Set(instance, "name", spectre::es2025::ObjectModule::Value::FromString("spectre-npc"));
+    objectModule.Set(instance, "hp", spectre::es2025::Value::Int64(240));
+    objectModule.Set(instance, "name", spectre::es2025::Value::String("spectre-npc"));
     std::vector<std::string> keys;
     if (objectModule.OwnKeys(instance, keys) == spectre::StatusCode::Ok) {
         std::cout << "  own keys:";
@@ -1461,7 +1461,7 @@ void DemonstrateObjectModule(spectre::es2025::ObjectModule &objectModule) {
         }
         std::cout << std::endl;
     }
-    spectre::es2025::ObjectModule::Value protoValue;
+    spectre::es2025::Value protoValue;
     if (objectModule.Get(instance, "type", protoValue) == spectre::StatusCode::Ok && protoValue.IsString()) {
         std::cout << "  prototype type => " << protoValue.String() << std::endl;
     }
@@ -1476,7 +1476,7 @@ void DemonstrateProxyModule(spectre::es2025::ObjectModule &objectModule, spectre
         std::cout << "  proxy target unavailable" << std::endl;
         return;
     }
-    objectModule.Set(target, "count", spectre::es2025::ObjectModule::Value::FromInt(3));
+    objectModule.Set(target, "count", spectre::es2025::Value::Int64(3));
     struct ProxyState {
         int gets;
         int sets;
@@ -1484,14 +1484,14 @@ void DemonstrateProxyModule(spectre::es2025::ObjectModule &objectModule, spectre
     } state{0, 0, 0};
     spectre::es2025::ProxyModule::TrapTable traps{};
     traps.get = [](spectre::es2025::ObjectModule &objects, spectre::es2025::ObjectModule::Handle handle,
-                   std::string_view key, spectre::es2025::ObjectModule::Value &outValue,
+                   std::string_view key, spectre::es2025::Value &outValue,
                    void *userdata) -> spectre::StatusCode {
         auto *stats = static_cast<ProxyState *>(userdata);
         stats->gets += 1;
         return objects.Get(handle, key, outValue);
     };
     traps.set = [](spectre::es2025::ObjectModule &objects, spectre::es2025::ObjectModule::Handle handle,
-                   std::string_view key, const spectre::es2025::ObjectModule::Value &value,
+                   std::string_view key, const spectre::es2025::Value &value,
                    void *userdata) -> spectre::StatusCode {
         auto *stats = static_cast<ProxyState *>(userdata);
         stats->sets += 1;
@@ -1510,11 +1510,11 @@ void DemonstrateProxyModule(spectre::es2025::ObjectModule &objectModule, spectre
         std::cout << "  proxy instance unavailable" << std::endl;
         return;
     }
-    spectre::es2025::ObjectModule::Value value;
+    spectre::es2025::Value value;
     if (proxyModule.Get(proxy, "count", value) == spectre::StatusCode::Ok && value.IsInt()) {
         std::cout << "  initial count => " << value.Int() << std::endl;
     }
-    proxyModule.Set(proxy, "count", spectre::es2025::ObjectModule::Value::FromInt(7));
+    proxyModule.Set(proxy, "count", spectre::es2025::Value::Int64(7));
     bool hasCount = false;
     proxyModule.Has(proxy, "count", hasCount);
     std::cout << "  has count => " << (hasCount ? "true" : "false") << std::endl;
@@ -1544,7 +1544,7 @@ void DemonstrateReflectModule(spectre::es2025::ObjectModule &objectModule,
         return;
     }
     spectre::es2025::ObjectModule::PropertyDescriptor descriptor{};
-    descriptor.value = spectre::es2025::ObjectModule::Value::FromInt(120);
+    descriptor.value = spectre::es2025::Value::Int64(120);
     descriptor.enumerable = true;
     descriptor.configurable = false;
     descriptor.writable = true;
@@ -1553,8 +1553,8 @@ void DemonstrateReflectModule(spectre::es2025::ObjectModule &objectModule,
         objectModule.Destroy(model);
         return;
     }
-    reflectModule.Set(model, "hp", spectre::es2025::ObjectModule::Value::FromInt(95));
-    spectre::es2025::ObjectModule::Value hpValue;
+    reflectModule.Set(model, "hp", spectre::es2025::Value::Int64(95));
+    spectre::es2025::Value hpValue;
     if (reflectModule.Get(model, "hp", hpValue) == spectre::StatusCode::Ok && hpValue.IsInt()) {
         std::cout << "  hp => " << hpValue.Int() << std::endl;
     }
@@ -1580,7 +1580,7 @@ void DemonstrateReflectModule(spectre::es2025::ObjectModule &objectModule,
     std::cout << "  prevent extensions => status:" << static_cast<int>(preventStatus)
               << " extensible:" << (reflectModule.IsExtensible(model) ? "true" : "false") << std::endl;
     spectre::es2025::ObjectModule::PropertyDescriptor armorDescriptor{};
-    armorDescriptor.value = spectre::es2025::ObjectModule::Value::FromInt(50);
+    armorDescriptor.value = spectre::es2025::Value::Int64(50);
     armorDescriptor.enumerable = true;
     armorDescriptor.configurable = true;
     armorDescriptor.writable = true;
@@ -1598,16 +1598,16 @@ void DemonstrateMapModule(spectre::es2025::MapModule &mapModule) {
         std::cout << "  map unavailable" << std::endl;
         return;
     }
-    mapModule.Set(handle, spectre::es2025::MapModule::Value::FromString("name"),
-                  spectre::es2025::MapModule::Value::FromString("spectre-map"));
-    mapModule.Set(handle, spectre::es2025::MapModule::Value::FromInt(7),
-                  spectre::es2025::MapModule::Value::FromDouble(42.5));
-    spectre::es2025::MapModule::Value value;
-    if (mapModule.Get(handle, spectre::es2025::MapModule::Value::FromString("name"), value) == spectre::StatusCode::Ok
+    mapModule.Set(handle, spectre::es2025::Value::String("name"),
+                  spectre::es2025::Value::String("spectre-map"));
+    mapModule.Set(handle, spectre::es2025::Value::Int64(7),
+                  spectre::es2025::Value::Number(42.5));
+    spectre::es2025::Value value;
+    if (mapModule.Get(handle, spectre::es2025::Value::String("name"), value) == spectre::StatusCode::Ok
         && value.IsString()) {
         std::cout << "  name => " << value.String() << std::endl;
     }
-    std::vector<spectre::es2025::MapModule::Value> keys;
+    std::vector<spectre::es2025::Value> keys;
     if (mapModule.Keys(handle, keys) == spectre::StatusCode::Ok) {
         std::cout << "  keys:";
         for (const auto &k: keys) {
@@ -1619,7 +1619,7 @@ void DemonstrateMapModule(spectre::es2025::MapModule &mapModule) {
         }
         std::cout << std::endl;
     }
-    std::vector<spectre::es2025::MapModule::Value> values;
+    std::vector<spectre::es2025::Value> values;
     if (mapModule.Values(handle, values) == spectre::StatusCode::Ok) {
         std::cout << "  values:";
         for (const auto &v: values) {
@@ -1632,7 +1632,7 @@ void DemonstrateMapModule(spectre::es2025::MapModule &mapModule) {
         std::cout << std::endl;
     }
     bool removed = false;
-    mapModule.Delete(handle, spectre::es2025::MapModule::Value::FromInt(7), removed);
+    mapModule.Delete(handle, spectre::es2025::Value::Int64(7), removed);
     std::cout << "  delete numeric key => " << (removed ? "true" : "false") << std::endl;
     mapModule.Clear(handle);
     mapModule.Destroy(handle);
@@ -1647,11 +1647,11 @@ void DemonstrateSetModule(spectre::es2025::SetModule &setModule) {
         std::cout << "  set unavailable" << std::endl;
         return;
     }
-    using Value = spectre::es2025::SetModule::Value;
-    setModule.Add(handle, Value::FromString("spectre-set"));
-    setModule.Add(handle, Value::FromInt(21));
-    setModule.Add(handle, Value::FromDouble(4.2));
-    setModule.Add(handle, Value::FromInt(21));
+    using Value = spectre::es2025::Value;
+    setModule.Add(handle, Value::String("spectre-set"));
+    setModule.Add(handle, Value::Int64(21));
+    setModule.Add(handle, Value::Number(4.2));
+    setModule.Add(handle, Value::Int64(21));
     std::vector<Value> values;
     if (setModule.Values(handle, values) == spectre::StatusCode::Ok) {
         std::cout << "  values:";
@@ -1667,7 +1667,7 @@ void DemonstrateSetModule(spectre::es2025::SetModule &setModule) {
         std::cout << std::endl;
     }
     bool removed = false;
-    setModule.Delete(handle, Value::FromDouble(4.2), removed);
+    setModule.Delete(handle, Value::Number(4.2), removed);
     std::cout << "  delete 4.2 => " << (removed ? "true" : "false") << std::endl;
     std::cout << "  size => " << setModule.Size(handle) << std::endl;
     setModule.Clear(handle);
@@ -1728,9 +1728,9 @@ void DemonstrateWeakMapModule(spectre::es2025::ObjectModule &objectModule,
         weakMapModule.Destroy(handle);
         return;
     }
-    weakMapModule.Set(handle, keyA, spectre::es2025::WeakMapModule::Value::FromInt(12));
-    weakMapModule.Set(handle, keyB, spectre::es2025::WeakMapModule::Value::FromInt(44));
-    spectre::es2025::WeakMapModule::Value value;
+    weakMapModule.Set(handle, keyA, spectre::es2025::Value::Int64(12));
+    weakMapModule.Set(handle, keyB, spectre::es2025::Value::Int64(44));
+    spectre::es2025::Value value;
     if (weakMapModule.Get(handle, keyA, value) == spectre::StatusCode::Ok && value.IsInt()) {
         std::cout << "  keyA => " << value.Int() << std::endl;
     }

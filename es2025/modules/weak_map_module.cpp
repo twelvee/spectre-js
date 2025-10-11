@@ -1,4 +1,4 @@
-#include "spectre/es2025/modules/weak_map_module.h"
+﻿#include "spectre/es2025/modules/weak_map_module.h"
 
 #include <algorithm>
 #include <cmath>
@@ -29,15 +29,6 @@ namespace spectre::es2025 {
             return hash;
         }
 
-        std::uint64_t HashString(std::string_view text) noexcept {
-            return HashBytes(text.data(), text.size());
-        }
-
-        std::uint64_t HashDouble(double value) noexcept {
-            std::uint64_t bits;
-            std::memcpy(&bits, &value, sizeof(double));
-            return HashBytes(&bits, sizeof(bits));
-        }
     }
 
     struct WeakMapModule::Entry {
@@ -84,218 +75,6 @@ namespace spectre::es2025 {
         std::uint32_t generation;
         MapRecord record;
     };
-
-    WeakMapModule::Value::Value() : m_Scalar(), m_Kind(Kind::Undefined), m_String() {
-    }
-
-    WeakMapModule::Value::Value(const Value &other) : m_Scalar(), m_Kind(Kind::Undefined), m_String() {
-        Assign(other);
-    }
-
-    WeakMapModule::Value::Value(Value &&other) noexcept : m_Scalar(), m_Kind(Kind::Undefined), m_String() {
-        Assign(std::move(other));
-    }
-
-    WeakMapModule::Value &WeakMapModule::Value::operator=(const Value &other) {
-        if (this != &other) {
-            Assign(other);
-        }
-        return *this;
-    }
-
-    WeakMapModule::Value &WeakMapModule::Value::operator=(Value &&other) noexcept {
-        if (this != &other) {
-            Assign(std::move(other));
-        }
-        return *this;
-    }
-
-    WeakMapModule::Value::~Value() = default;
-
-    WeakMapModule::Value WeakMapModule::Value::Undefined() {
-        Value v;
-        v.Reset();
-        return v;
-    }
-
-    WeakMapModule::Value WeakMapModule::Value::FromBoolean(bool v) {
-        Value value;
-        value.m_Kind = Kind::Boolean;
-        value.m_Scalar.booleanValue = v;
-        value.m_String.clear();
-        return value;
-    }
-
-    WeakMapModule::Value WeakMapModule::Value::FromInt(std::int64_t v) {
-        Value value;
-        value.m_Kind = Kind::Int64;
-        value.m_Scalar.intValue = v;
-        value.m_String.clear();
-        return value;
-    }
-
-    WeakMapModule::Value WeakMapModule::Value::FromDouble(double v) {
-        Value value;
-        value.m_Kind = Kind::Double;
-        value.m_Scalar.doubleValue = v;
-        value.m_String.clear();
-        return value;
-    }
-
-    WeakMapModule::Value WeakMapModule::Value::FromHandle(Handle v) {
-        Value value;
-        value.m_Kind = Kind::Handle;
-        value.m_Scalar.handleValue = v;
-        value.m_String.clear();
-        return value;
-    }
-
-    WeakMapModule::Value WeakMapModule::Value::FromString(std::string_view text) {
-        Value value;
-        value.m_Kind = Kind::String;
-        value.m_Scalar.handleValue = 0;
-        value.m_String.assign(text.data(), text.size());
-        return value;
-    }
-
-    bool WeakMapModule::Value::IsUndefined() const noexcept {
-        return m_Kind == Kind::Undefined;
-    }
-
-    bool WeakMapModule::Value::IsBoolean() const noexcept {
-        return m_Kind == Kind::Boolean;
-    }
-
-    bool WeakMapModule::Value::IsInt() const noexcept {
-        return m_Kind == Kind::Int64;
-    }
-
-    bool WeakMapModule::Value::IsDouble() const noexcept {
-        return m_Kind == Kind::Double;
-    }
-
-    bool WeakMapModule::Value::IsString() const noexcept {
-        return m_Kind == Kind::String;
-    }
-
-    bool WeakMapModule::Value::IsHandle() const noexcept {
-        return m_Kind == Kind::Handle;
-    }
-
-    bool WeakMapModule::Value::Boolean() const noexcept {
-        return m_Scalar.booleanValue;
-    }
-
-    std::int64_t WeakMapModule::Value::Int() const noexcept {
-        return m_Scalar.intValue;
-    }
-
-    double WeakMapModule::Value::Double() const noexcept {
-        return m_Scalar.doubleValue;
-    }
-
-    WeakMapModule::Handle WeakMapModule::Value::HandleValue() const noexcept {
-        return m_Scalar.handleValue;
-    }
-
-    std::string_view WeakMapModule::Value::String() const noexcept {
-        return m_String;
-    }
-
-    void WeakMapModule::Value::Assign(const Value &other) {
-        m_Kind = other.m_Kind;
-        switch (other.m_Kind) {
-            case Kind::Undefined:
-                m_Scalar.handleValue = 0;
-                m_String.clear();
-                break;
-            case Kind::Boolean:
-                m_Scalar.booleanValue = other.m_Scalar.booleanValue;
-                m_String.clear();
-                break;
-            case Kind::Int64:
-                m_Scalar.intValue = other.m_Scalar.intValue;
-                m_String.clear();
-                break;
-            case Kind::Double:
-                m_Scalar.doubleValue = other.m_Scalar.doubleValue;
-                m_String.clear();
-                break;
-            case Kind::Handle:
-                m_Scalar.handleValue = other.m_Scalar.handleValue;
-                m_String.clear();
-                break;
-            case Kind::String:
-                m_Scalar.handleValue = 0;
-                m_String = other.m_String;
-                break;
-        }
-    }
-
-    void WeakMapModule::Value::Assign(Value &&other) noexcept {
-        m_Kind = other.m_Kind;
-        switch (other.m_Kind) {
-            case Kind::Undefined:
-                m_Scalar.handleValue = 0;
-                m_String.clear();
-                break;
-            case Kind::Boolean:
-                m_Scalar.booleanValue = other.m_Scalar.booleanValue;
-                m_String.clear();
-                break;
-            case Kind::Int64:
-                m_Scalar.intValue = other.m_Scalar.intValue;
-                m_String.clear();
-                break;
-            case Kind::Double:
-                m_Scalar.doubleValue = other.m_Scalar.doubleValue;
-                m_String.clear();
-                break;
-            case Kind::Handle:
-                m_Scalar.handleValue = other.m_Scalar.handleValue;
-                m_String.clear();
-                break;
-            case Kind::String:
-                m_Scalar.handleValue = 0;
-                m_String = std::move(other.m_String);
-                break;
-        }
-        other.m_Kind = Kind::Undefined;
-        other.m_Scalar.handleValue = 0;
-        other.m_String.clear();
-    }
-
-    void WeakMapModule::Value::Reset() noexcept {
-        m_Kind = Kind::Undefined;
-        m_Scalar.handleValue = 0;
-        m_String.clear();
-    }
-
-    bool WeakMapModule::Value::Equals(const Value &other) const noexcept {
-        if (m_Kind != other.m_Kind) {
-            return false;
-        }
-        switch (m_Kind) {
-            case Kind::Undefined:
-                return true;
-            case Kind::Boolean:
-                return m_Scalar.booleanValue == other.m_Scalar.booleanValue;
-            case Kind::Int64:
-                return m_Scalar.intValue == other.m_Scalar.intValue;
-            case Kind::Double: {
-                std::uint64_t a;
-                std::uint64_t b;
-                std::memcpy(&a, &m_Scalar.doubleValue, sizeof(double));
-                std::memcpy(&b, &other.m_Scalar.doubleValue, sizeof(double));
-                return a == b;
-            }
-            case Kind::Handle:
-                return m_Scalar.handleValue == other.m_Scalar.handleValue;
-            case Kind::String:
-                return m_String == other.m_String;
-        }
-        return false;
-    }
 
     WeakMapModule::WeakMapModule()
         : m_Runtime(nullptr),
@@ -450,7 +229,7 @@ namespace spectre::es2025 {
         bool collision = false;
         auto existing = Locate(*record, key, hash, bucket, collision);
         if (existing != kInvalidIndex) {
-            record->entries[existing].value.Assign(value);
+            record->entries[existing].value = value;
             Touch(*record);
             if (collision) {
                 m_Metrics.collisions += 1;
@@ -718,7 +497,7 @@ namespace spectre::es2025 {
             if (!allowReplace) {
                 return StatusCode::AlreadyExists;
             }
-            record.entries[existing].value.Assign(value);
+            record.entries[existing].value = value;
             Touch(record);
             if (collision) {
                 m_Metrics.collisions += 1;
@@ -729,7 +508,7 @@ namespace spectre::es2025 {
         auto &entry = record.entries[entryIndex];
         entry.hash = hash;
         entry.key = key;
-        entry.value.Assign(value);
+        entry.value = value;
         if (record.buckets.empty()) {
             record.buckets.resize(kInitialBucketCount, kInvalidIndex);
         }

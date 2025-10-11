@@ -1,4 +1,4 @@
-#include "spectre/es2025/modules/array_module.h"
+﻿#include "spectre/es2025/modules/array_module.h"
 
 #include <algorithm>
 #include <cmath>
@@ -18,117 +18,6 @@ namespace spectre::es2025 {
         constexpr std::size_t kDefaultDenseCapacity = 16;
         constexpr double kSparsePromotionRatio = 0.75;
         constexpr double kDenseCompactionRatio = 0.30;
-    }
-
-    ArrayModule::Value::Value() noexcept
-        : kind(Kind::Undefined),
-          number(0.0),
-          booleanValue(false),
-          text() {
-    }
-
-    ArrayModule::Value::Value(double v) noexcept
-        : kind(Kind::Number),
-          number(v),
-          booleanValue(false),
-          text() {
-    }
-
-    ArrayModule::Value::Value(bool v) noexcept
-        : kind(Kind::Boolean),
-          number(0.0),
-          booleanValue(v),
-          text() {
-    }
-
-    ArrayModule::Value::Value(std::string_view v)
-        : kind(Kind::String),
-          number(0.0),
-          booleanValue(false),
-          text(v) {
-    }
-
-    ArrayModule::Value::Value(const Value &other) = default;
-
-    ArrayModule::Value::Value(Value &&other) noexcept = default;
-
-    ArrayModule::Value &ArrayModule::Value::operator=(const Value &other) = default;
-
-    ArrayModule::Value &ArrayModule::Value::operator=(Value &&other) noexcept = default;
-
-    ArrayModule::Value::~Value() = default;
-
-    ArrayModule::Value ArrayModule::Value::Undefined() noexcept {
-        return Value();
-    }
-
-    double ArrayModule::Value::Number(double fallback) const noexcept {
-        return kind == Kind::Number ? number : fallback;
-    }
-
-    bool ArrayModule::Value::Boolean(bool fallback) const noexcept {
-        return kind == Kind::Boolean ? booleanValue : fallback;
-    }
-
-    std::string_view ArrayModule::Value::StringView() const noexcept {
-        return kind == Kind::String ? std::string_view(text) : std::string_view();
-    }
-
-    bool ArrayModule::Value::Empty() const noexcept {
-        return kind == Kind::Undefined;
-    }
-
-    std::string ArrayModule::Value::ToString() const {
-        switch (kind) {
-            case Kind::Undefined:
-                return "undefined";
-            case Kind::Number: {
-                std::ostringstream stream;
-                stream.setf(std::ios::fmtflags(0), std::ios::floatfield);
-                stream.precision(17);
-                stream << number;
-                return stream.str();
-            }
-            case Kind::Boolean:
-                return booleanValue ? "true" : "false";
-            case Kind::String:
-                return text;
-        }
-        return {};
-    }
-
-    bool ArrayModule::Value::operator==(const Value &other) const noexcept {
-        if (kind != other.kind) {
-            return false;
-        }
-        switch (kind) {
-            case Kind::Undefined:
-                return true;
-            case Kind::Number:
-                return number == other.number;
-            case Kind::Boolean:
-                return booleanValue == other.booleanValue;
-            case Kind::String:
-                return text == other.text;
-        }
-        return false;
-    }
-
-    bool ArrayModule::Value::operator!=(const Value &other) const noexcept {
-        return !(*this == other);
-    }
-
-    ArrayModule::Metrics::Metrics() noexcept
-        : denseCount(0),
-          sparseCount(0),
-          denseCapacity(0),
-          denseLength(0),
-          sparseEntries(0),
-          transitionsToSparse(0),
-          transitionsToDense(0),
-          compactions(0),
-          clones(0),
-          lastMutationFrame(0) {
     }
 
     ArrayModule::ArrayModule()
@@ -1119,36 +1008,40 @@ namespace spectre::es2025 {
     }
 
     bool ArrayModule::IsNumeric(const Value &value) noexcept {
-        if (value.kind == Value::Kind::Number || value.kind == Value::Kind::Boolean) {
+        if (value.IsNumeric() || value.IsBoolean()) {
             return true;
         }
-        if (value.kind != Value::Kind::String) {
+        if (!value.IsString()) {
             return false;
         }
-        std::istringstream stream(value.text);
+        auto textView = value.AsString();
+        if (textView.empty()) {
+            return false;
+        }
+        std::string buffer(textView);
+        std::istringstream stream(buffer);
         double parsed{};
         stream >> parsed;
         return stream && stream.peek() == std::char_traits<char>::eof();
     }
 
     double ArrayModule::ResolveNumeric(const Value &value, double fallback) noexcept {
-        switch (value.kind) {
-            case Value::Kind::Number:
-                return value.number;
-            case Value::Kind::Boolean:
-                return value.booleanValue ? 1.0 : 0.0;
-            case Value::Kind::String: {
-                std::istringstream stream(value.text);
+        if (value.IsNumeric() || value.IsBoolean()) {
+            return value.AsNumber(fallback);
+        }
+        if (value.IsString()) {
+            auto textView = value.AsString();
+            if (!textView.empty()) {
+                std::string buffer(textView);
+                std::istringstream stream(buffer);
                 double parsed{};
                 stream >> parsed;
                 if (stream && stream.peek() == std::char_traits<char>::eof()) {
                     return parsed;
                 }
-                return fallback;
             }
-            case Value::Kind::Undefined:
-                return fallback;
         }
         return fallback;
     }
+
 }

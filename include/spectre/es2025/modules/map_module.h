@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <cstdint>
 #include <string>
@@ -9,85 +9,12 @@
 #include "spectre/config.h"
 #include "spectre/status.h"
 #include "spectre/es2025/module.h"
+#include "spectre/es2025/value.h"
 
 namespace spectre::es2025 {
     class MapModule final : public Module {
     public:
         using Handle = std::uint64_t;
-
-        struct Value {
-            friend class MapModule;
-
-            enum class Kind : std::uint8_t { Undefined, Boolean, Int64, Double, String, Handle };
-
-            Value();
-
-            Value(const Value &other);
-
-            Value(Value &&other) noexcept;
-
-            Value &operator=(const Value &other);
-
-            Value &operator=(Value &&other) noexcept;
-
-            ~Value();
-
-            static Value Undefined();
-
-            static Value FromBoolean(bool v);
-
-            static Value FromInt(std::int64_t v);
-
-            static Value FromDouble(double v);
-
-            static Value FromHandle(Handle v);
-
-            static Value FromString(std::string_view text);
-
-            bool IsUndefined() const noexcept;
-
-            bool IsBoolean() const noexcept;
-
-            bool IsInt() const noexcept;
-
-            bool IsDouble() const noexcept;
-
-            bool IsString() const noexcept;
-
-            bool IsHandle() const noexcept;
-
-            bool Boolean() const noexcept;
-
-            std::int64_t Int() const noexcept;
-
-            double Double() const noexcept;
-
-            Handle HandleValue() const noexcept;
-
-            std::string_view String() const noexcept;
-
-            void Assign(const Value &other);
-
-            void Assign(Value &&other) noexcept;
-
-            void Reset() noexcept;
-
-            bool Equals(const Value &other) const noexcept;
-
-        private:
-            union Scalar {
-                bool booleanValue;
-                std::int64_t intValue;
-                double doubleValue;
-                Handle handleValue;
-
-                Scalar() : handleValue(0) {
-                }
-            } m_Scalar;
-
-            Kind m_Kind;
-            std::string m_String;
-        };
 
         struct Metrics {
             std::uint64_t liveMaps;
