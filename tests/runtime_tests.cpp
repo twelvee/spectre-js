@@ -49,6 +49,7 @@
 #include "spectre/es2025/modules/symbol_module.h"
 #include "spectre/es2025/modules/reflect_module.h"
 #include "spectre/es2025/modules/weak_ref_module.h"
+#include "spectre/es2025/modules/finalization_registry_module.h"
 #include "spectre/es2025/modules/shadow_realm_module.h"
 #include "spectre/es2025/modules/temporal_module.h"
 
@@ -168,6 +169,13 @@ namespace {
         return StatusCode::Ok;
     }
 
+    
+    void CollectHoldingsCallback(const spectre::es2025::Value &holdings, void *userData) {
+        auto *buffer = static_cast<std::vector<spectre::es2025::Value> *>(userData);
+        if (buffer != nullptr) {
+            buffer->push_back(holdings);
+        }
+    }
     bool DefaultConfigPopulatesDefaults() {
         auto config = spectre::MakeDefaultConfig();
         bool ok = true;
@@ -2828,6 +2836,101 @@ namespace {
         return ok;
     }
 
+    bool FinalizationRegistryModuleSchedulesHoldings() {
+        auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
+        bool ok = ExpectTrue(runtime != nullptr, "Runtime created");
+        if (!runtime) {
+            return false;
+        }
+        auto &environment = runtime->EsEnvironment();
+        auto *objectPtr = environment.FindModule("Object");
+        auto *registryPtr = environment.FindModule("FinalizationRegistry");
+        auto *objectModule = dynamic_cast<spectre::es2025::ObjectModule *>(objectPtr);
+        auto *registryModule = dynamic_cast<spectre::es2025::FinalizationRegistryModule *>(registryPtr);
+        ok &= ExpectTrue(objectModule != nullptr, "Object module available");
+        ok &= ExpectTrue(registryModule != nullptr, "FinalizationRegistry module available");
+        if (!objectModule || !registryModule) {
+            return false;
+        }
+
+        spectre::es2025::FinalizationRegistryModule::CreateOptions options;
+        options.label = "test.finalization.manual";
+        options.autoCleanup = false;
+        options.initialCapacity = 4;
+        spectre::es2025::FinalizationRegistryModule::Handle registry = 0;
+        ok &= ExpectStatus(registryModule->Create(options, registry), StatusCode::Ok, "Create registry");
+
+        ok &= ExpectStatus(registryModule->Register(registry, 0, spectre::es2025::Value::String("invalid"), 0),
+                           StatusCode::InvalidArgument, "Reject null target");
+
+        spectre::es2025::ObjectModule::Handle targetA = 0;
+        spectre::es2025::ObjectModule::Handle targetB = 0;
+        spectre::es2025::ObjectModule::Handle tokenA = 0;
+        ok &= ExpectStatus(objectModule->Create("test.finalization.targetA", 0, targetA), StatusCode::Ok, "Create targetA");
+        ok &= ExpectStatus(objectModule->Create("test.finalization.targetB", 0, targetB), StatusCode::Ok, "Create targetB");
+        ok &= ExpectStatus(objectModule->Create("test.finalization.tokenA", 0, tokenA), StatusCode::Ok, "Create tokenA");
+        ok &= ExpectStatus(registryModule->Register(registry, targetA, spectre::es2025::Value::String("alpha"), tokenA),
+                           StatusCode::Ok, "Register targetA");
+        ok &= ExpectTrue(registryModule->LiveCellCount(registry) == 1, "Live count after first register");
+        ok &= ExpectStatus(registryModule->Register(registry, targetB, spectre::es2025::Value::String("beta"), 0),
+                           StatusCode::Ok, "Register targetB");
+        ok &= ExpectTrue(registryModule->LiveCellCount(registry) == 2, "Live count after second register");
+
+        bool removed = false;
+        ok &= ExpectStatus(registryModule->Unregister(registry, tokenA, removed), StatusCode::Ok, "Unregister tokenA");
+        ok &= ExpectTrue(removed, "Unregister removed entry");
+        ok &= ExpectTrue(registryModule->LiveCellCount(registry) == 1, "Live count after unregister");
+        ok &= ExpectStatus(registryModule->Unregister(registry, tokenA, removed), StatusCode::Ok, "Unregister idempotent");
+        ok &= ExpectTrue(!removed, "Second unregister reports false");
+
+        ok &= ExpectStatus(objectModule->Destroy(targetA), StatusCode::Ok, "Destroy targetA");
+        ok &= ExpectStatus(objectModule->Destroy(tokenA), StatusCode::Ok, "Destroy tokenA");
+        ok &= ExpectStatus(objectModule->Destroy(targetB), StatusCode::Ok, "Destroy targetB");
+
+        runtime->Tick({0.016, 1});
+        ok &= ExpectTrue(registryModule->PendingCount(registry) == 1, "Pending count after tick");
+
+        std::vector<spectre::es2025::Value> processed;
+        std::uint32_t processedCount = 0;
+        ok &= ExpectStatus(registryModule->CleanupSome(registry, CollectHoldingsCallback, &processed, 0, processedCount),
+                           StatusCode::Ok, "CleanupSome manual");
+        ok &= ExpectTrue(processedCount == 1, "Processed count one");
+        ok &= ExpectTrue(processed.size() == 1 && processed.front().IsString()
+                       && processed.front().AsString() == "beta", "Holdings captured");
+        ok &= ExpectTrue(registryModule->PendingCount(registry) == 0, "Pending cleared");
+        ok &= ExpectTrue(registryModule->LiveCellCount(registry) == 0, "Live cleared");
+        ok &= ExpectStatus(registryModule->Destroy(registry), StatusCode::Ok, "Destroy manual registry");
+
+        spectre::es2025::FinalizationRegistryModule::CreateOptions autoOptions;
+        autoOptions.label = "test.finalization.auto";
+        autoOptions.autoCleanup = true;
+        autoOptions.autoCleanupBatch = 1;
+        std::vector<spectre::es2025::Value> autoCollected;
+        autoOptions.defaultCleanup = CollectHoldingsCallback;
+        autoOptions.defaultUserData = &autoCollected;
+        autoOptions.initialCapacity = 2;
+        spectre::es2025::FinalizationRegistryModule::Handle autoRegistry = 0;
+        ok &= ExpectStatus(registryModule->Create(autoOptions, autoRegistry), StatusCode::Ok, "Create auto registry");
+        spectre::es2025::ObjectModule::Handle autoA = 0;
+        spectre::es2025::ObjectModule::Handle autoB = 0;
+        ok &= ExpectStatus(objectModule->Create("test.finalization.autoA", 0, autoA), StatusCode::Ok, "Create autoA");
+        ok &= ExpectStatus(objectModule->Create("test.finalization.autoB", 0, autoB), StatusCode::Ok, "Create autoB");
+        ok &= ExpectStatus(registryModule->Register(autoRegistry, autoA, spectre::es2025::Value::String("gamma"), 0),
+                           StatusCode::Ok, "Register autoA");
+        ok &= ExpectStatus(registryModule->Register(autoRegistry, autoB, spectre::es2025::Value::String("delta"), 0),
+                           StatusCode::Ok, "Register autoB");
+        ok &= ExpectStatus(objectModule->Destroy(autoA), StatusCode::Ok, "Destroy autoA");
+        runtime->Tick({0.016, 2});
+        ok &= ExpectTrue(autoCollected.size() == 1, "Auto cleanup first entry");
+        ok &= ExpectTrue(registryModule->LiveCellCount(autoRegistry) == 1, "Auto registry one live");
+        ok &= ExpectStatus(objectModule->Destroy(autoB), StatusCode::Ok, "Destroy autoB");
+        runtime->Tick({0.016, 3});
+        ok &= ExpectTrue(autoCollected.size() == 2, "Auto cleanup second entry");
+        ok &= ExpectTrue(registryModule->LiveCellCount(autoRegistry) == 0, "Auto registry drained");
+        ok &= ExpectStatus(registryModule->Destroy(autoRegistry), StatusCode::Ok, "Destroy auto registry");
+        return ok;
+    }
+
     bool WeakMapModulePurgesInvalidKeys() {
         auto runtime = SpectreRuntime::Create(MakeConfig(RuntimeMode::SingleThread));
         bool ok = ExpectTrue(runtime != nullptr, "Runtime created");
@@ -3847,6 +3950,7 @@ int main() {
         {"WeakSetModuleCompactsInvalidEntries", WeakSetModuleCompactsInvalidEntries},
         {"ReflectModuleProvidesMetaOperations", ReflectModuleProvidesMetaOperations},
         {"WeakRefModuleTracksLifetime", WeakRefModuleTracksLifetime},
+        {"FinalizationRegistryModuleSchedulesHoldings", FinalizationRegistryModuleSchedulesHoldings},
         {"WeakMapModulePurgesInvalidKeys", WeakMapModulePurgesInvalidKeys},
         {"MathModuleAcceleratesWorkloads", MathModuleAcceleratesWorkloads},
         {"ShadowRealmModuleCreatesIsolatedRealms", ShadowRealmModuleCreatesIsolatedRealms},
@@ -3880,6 +3984,7 @@ int main() {
     std::cout << "Executed " << passed << " / " << tests.size() << " tests" << std::endl;
     return 0;
 }
+
 
 
 

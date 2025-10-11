@@ -50,6 +50,7 @@
 #include "spectre/es2025/modules/weak_set_module.h"
 #include "spectre/es2025/modules/weak_map_module.h"
 #include "spectre/es2025/modules/weak_ref_module.h"
+#include "spectre/es2025/modules/finalization_registry_module.h"
 #include "spectre/es2025/modules/shadow_realm_module.h"
 #include "spectre/es2025/modules/temporal_module.h"
 #include "spectre/es2025/value.h"
@@ -144,6 +145,20 @@ namespace {
         outDiagnostics = "promise-handled";
         return spectre::StatusCode::Ok;
     }
+
+    void DemoCollectFinalizationHoldings(const spectre::es2025::Value &holdings, void *userData) {
+        auto *buffer = static_cast<std::vector<spectre::es2025::Value> *>(userData);
+        if (buffer != nullptr) {
+            buffer->push_back(holdings);
+        }
+    }
+
+    void DemoPrintFinalizationHoldings(const spectre::es2025::Value &holdings, void *userData) {
+        auto *label = static_cast<const char *>(userData);
+        std::cout << "  auto cleanup => [" << (label ? label : "default")
+                  << "] " << holdings.ToString() << std::endl;
+    }
+
 
     std::string LoadBootstrapScript() {
         const char *candidates[] = {
@@ -1781,6 +1796,103 @@ void DemonstrateWeakRefModule(spectre::es2025::ObjectModule &objectModule,
     objectModule.Destroy(hero);
 }
 
+void DemonstrateFinalizationRegistryModule(spectre::SpectreRuntime &runtime,
+                                          spectre::es2025::ObjectModule &objectModule,
+                                          spectre::es2025::FinalizationRegistryModule &registryModule) {
+    std::cout << "\nDemonstrating FinalizationRegistry module" << std::endl;
+    using RegistryModule = spectre::es2025::FinalizationRegistryModule;
+    RegistryModule::CreateOptions manualOptions;
+    manualOptions.label = "demo.finalization.manual";
+    manualOptions.autoCleanup = false;
+    manualOptions.initialCapacity = 4;
+    RegistryModule::Handle manualHandle = 0;
+    if (registryModule.Create(manualOptions, manualHandle) != spectre::StatusCode::Ok) {
+        std::cout << "  registry creation failed" << std::endl;
+        return;
+    }
+
+    spectre::es2025::ObjectModule::Handle transient = 0;
+    if (objectModule.Create("demo.finalization.transient", 0, transient) != spectre::StatusCode::Ok) {
+        std::cout << "  target allocation failed" << std::endl;
+        registryModule.Destroy(manualHandle);
+        return;
+    }
+
+    if (registryModule.Register(manualHandle,
+                                transient,
+                                spectre::es2025::Value::String("transient-holdings"),
+                                0) != spectre::StatusCode::Ok) {
+        std::cout << "  register failed" << std::endl;
+        objectModule.Destroy(transient);
+        registryModule.Destroy(manualHandle);
+        return;
+    }
+
+    objectModule.Destroy(transient);
+    auto frame = runtime.LastTick().frameIndex;
+    runtime.Tick({0.016, frame + 1});
+
+    std::vector<spectre::es2025::Value> captured;
+    std::uint32_t processed = 0;
+    if (registryModule.CleanupSome(manualHandle,
+                                   DemoCollectFinalizationHoldings,
+                                   &captured,
+                                   0,
+                                   processed) == spectre::StatusCode::Ok) {
+        if (captured.empty()) {
+            std::cout << "  manual cleanup => (nothing to finalize)" << std::endl;
+        } else {
+            for (const auto &value: captured) {
+                std::cout << "  manual cleanup => " << value.ToString() << std::endl;
+            }
+        }
+    } else {
+        std::cout << "  manual cleanup failed" << std::endl;
+    }
+    registryModule.Destroy(manualHandle);
+
+    RegistryModule::CreateOptions autoOptions;
+    autoOptions.label = "demo.finalization.auto";
+    autoOptions.autoCleanup = true;
+    autoOptions.autoCleanupBatch = 1;
+    autoOptions.defaultCleanup = DemoPrintFinalizationHoldings;
+    autoOptions.defaultUserData = const_cast<char *>("demo");
+    RegistryModule::Handle autoHandle = 0;
+    if (registryModule.Create(autoOptions, autoHandle) != spectre::StatusCode::Ok) {
+        return;
+    }
+
+    spectre::es2025::ObjectModule::Handle cacheA = 0;
+    spectre::es2025::ObjectModule::Handle cacheB = 0;
+    const auto statusA = objectModule.Create("demo.finalization.cacheA", 0, cacheA);
+    const auto statusB = objectModule.Create("demo.finalization.cacheB", 0, cacheB);
+    if (statusA == spectre::StatusCode::Ok && statusB == spectre::StatusCode::Ok) {
+        registryModule.Register(autoHandle,
+                                cacheA,
+                                spectre::es2025::Value::String("cacheA"),
+                                0);
+        registryModule.Register(autoHandle,
+                                cacheB,
+                                spectre::es2025::Value::String("cacheB"),
+                                0);
+        objectModule.Destroy(cacheA);
+        frame = runtime.LastTick().frameIndex;
+        runtime.Tick({0.016, frame + 1});
+        objectModule.Destroy(cacheB);
+        frame = runtime.LastTick().frameIndex;
+        runtime.Tick({0.016, frame + 1});
+    } else {
+        std::cout << "  auto cleanup targets unavailable" << std::endl;
+        if (statusA == spectre::StatusCode::Ok && cacheA != 0) {
+            objectModule.Destroy(cacheA);
+        }
+        if (statusB == spectre::StatusCode::Ok && cacheB != 0) {
+            objectModule.Destroy(cacheB);
+        }
+    }
+    registryModule.Destroy(autoHandle);
+}
+
 void DemonstrateIteratorModule(spectre::es2025::IteratorModule &iteratorModule) {
     using Value = spectre::es2025::Value;
     spectre::es2025::IteratorModule::Handle rangeHandle = 0;
@@ -2203,6 +2315,13 @@ int main() {
         return 1;
     }
 
+    auto *finalizationModulePtr = environment.FindModule("FinalizationRegistry");
+    auto *finalizationModule = dynamic_cast<es2025::FinalizationRegistryModule *>(finalizationModulePtr);
+    if (!finalizationModule) {
+        std::cerr << "FinalizationRegistry module unavailable" << std::endl;
+        return 1;
+    }
+
     auto *weakRefModulePtr = environment.FindModule("WeakRef");
     auto *weakRefModule = dynamic_cast<es2025::WeakRefModule *>(weakRefModulePtr);
     if (!weakRefModule) {
@@ -2449,6 +2568,7 @@ int main() {
     DemonstrateMapModule(*mapModule);
     DemonstrateSetModule(*setModule);
     DemonstrateWeakMapModule(*objectModule, *weakMapModule);
+    DemonstrateFinalizationRegistryModule(*runtime, *objectModule, *finalizationModule);
     DemonstrateWeakRefModule(*objectModule, *weakRefModule);
     DemonstrateWeakSetModule(*objectModule, *weakSetModule);
 
