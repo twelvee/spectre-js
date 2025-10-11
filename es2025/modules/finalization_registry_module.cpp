@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <utility>
+#include <cstring>
 
 #include "spectre/runtime.h"
 #include "spectre/es2025/environment.h"
@@ -58,6 +59,7 @@ namespace spectre::es2025 {
           cells(),
           freeCells(),
           pendingQueue(),
+          pendingHead(0),
           tokenBuckets(),
           scanCursor(0),
           liveCells(0),
@@ -206,6 +208,7 @@ namespace spectre::es2025 {
         registry.cells.clear();
         registry.freeCells.clear();
         registry.pendingQueue.clear();
+        registry.pendingHead = 0;
         if (!registry.tokenBuckets.empty()) {
             std::fill(registry.tokenBuckets.begin(), registry.tokenBuckets.end(), kInvalidIndex);
         }
@@ -243,6 +246,7 @@ namespace spectre::es2025 {
         registry.cells.clear();
         registry.freeCells.clear();
         registry.pendingQueue.clear();
+        registry.pendingHead = 0;
         if (!registry.tokenBuckets.empty()) {
             std::fill(registry.tokenBuckets.begin(), registry.tokenBuckets.end(), kInvalidIndex);
         }
@@ -596,6 +600,26 @@ namespace spectre::es2025 {
         }
     }
 
+    void FinalizationRegistryModule::TrimPendingQueue(RegistryRecord &registry) noexcept {
+        if (registry.pendingHead == 0) {
+            return;
+        }
+        const auto queued = registry.pendingQueue.size();
+        if (registry.pendingHead >= queued) {
+            registry.pendingQueue.clear();
+            registry.pendingHead = 0;
+            return;
+        }
+        const auto pending = queued - registry.pendingHead;
+        if (pending <= queued / 2) {
+            std::memmove(registry.pendingQueue.data(),
+                         registry.pendingQueue.data() + registry.pendingHead,
+                         pending * sizeof(std::uint32_t));
+            registry.pendingQueue.resize(pending);
+            registry.pendingHead = 0;
+        }
+    }
+
     void FinalizationRegistryModule::QueueCell(RegistryRecord &registry, std::uint32_t index) noexcept {
         if (index >= registry.cells.size()) {
             return;
@@ -605,6 +629,7 @@ namespace spectre::es2025 {
             return;
         }
         cell.pending = true;
+        TrimPendingQueue(registry);
         if (registry.pendingQueue.size() == registry.pendingQueue.capacity()) {
             const std::size_t grow = registry.pendingQueue.capacity() == 0 ? 8 : registry.pendingQueue.capacity() * 2;
             registry.pendingQueue.reserve(grow);
@@ -615,11 +640,18 @@ namespace spectre::es2025 {
     }
 
     bool FinalizationRegistryModule::DequeueCell(RegistryRecord &registry, std::uint32_t &outIndex) noexcept {
-        while (!registry.pendingQueue.empty()) {
-            outIndex = registry.pendingQueue.back();
-            registry.pendingQueue.pop_back();
+        while (registry.pendingHead < registry.pendingQueue.size()) {
+            outIndex = registry.pendingQueue[registry.pendingHead++];
+            if (registry.pendingHead >= registry.pendingQueue.size()) {
+                registry.pendingQueue.clear();
+                registry.pendingHead = 0;
+            } else if (registry.pendingHead >= registry.pendingQueue.size() / 2) {
+                TrimPendingQueue(registry);
+            }
             return true;
         }
+        registry.pendingQueue.clear();
+        registry.pendingHead = 0;
         return false;
     }
 

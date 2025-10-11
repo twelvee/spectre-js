@@ -104,6 +104,7 @@ namespace spectre::es2025 {
             std::vector<Cell> cells;
             std::vector<std::uint32_t> freeCells;
             std::vector<std::uint32_t> pendingQueue;
+            std::size_t pendingHead;
             std::vector<std::uint32_t> tokenBuckets;
             std::uint32_t scanCursor;
             std::uint32_t liveCells;
@@ -139,6 +140,7 @@ namespace spectre::es2025 {
         void ReleaseCell(RegistryRecord &registry, std::uint32_t index, bool processed) noexcept;
 
         void EnsureTokenCapacity(RegistryRecord &registry);
+        void TrimPendingQueue(RegistryRecord &registry) noexcept;
         void InsertToken(RegistryRecord &registry, std::uint32_t cellIndex) noexcept;
         void RemoveToken(RegistryRecord &registry, std::uint32_t cellIndex) noexcept;
 
