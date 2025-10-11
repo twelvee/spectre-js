@@ -138,7 +138,7 @@ namespace spectre::es2025 {
     }
 
     void ModuleLoaderModule::Initialize(const ModuleInitContext &context) {
-        std::lock_guard<std::mutex> lock(m_Mutex);
+        std::unique_lock<std::mutex> lock(m_Mutex);
         m_Runtime = &context.runtime;
         m_Subsystems = &context.subsystems;
         m_Config = context.config;
@@ -156,7 +156,7 @@ namespace spectre::es2025 {
         }
         m_ContextLookup.clear();
         ResetMetrics();
-        (void) EnsureContextLocked(m_DefaultContextName, m_DefaultStackSize);
+        (void) EnsureContextUnlocked(m_DefaultContextName, m_DefaultStackSize, lock);
     }
 
     void ModuleLoaderModule::Tick(const TickInfo &info, const ModuleTickContext &) noexcept {
@@ -174,7 +174,7 @@ namespace spectre::es2025 {
     }
 
     void ModuleLoaderModule::Reconfigure(const RuntimeConfig &config) {
-        std::lock_guard<std::mutex> lock(m_Mutex);
+        std::unique_lock<std::mutex> lock(m_Mutex);
         m_Config = config;
         m_GpuEnabled = config.enableGpuAcceleration;
         auto heapKilobytes = static_cast<std::uint32_t>(config.memory.heapBytes / 1024ULL);
@@ -182,7 +182,7 @@ namespace spectre::es2025 {
             std::uint32_t suggested = std::min<std::uint32_t>(heapKilobytes * 2u, 1u << 20);
             m_DefaultStackSize = std::max(kMinimumStackSize, suggested);
         }
-        (void) EnsureContextLocked(m_DefaultContextName, m_DefaultStackSize);
+        (void) EnsureContextUnlocked(m_DefaultContextName, m_DefaultStackSize, lock);
     }
 
     void ModuleLoaderModule::SetHostResolver(ResolveCallback callback, void *userData) noexcept {
@@ -258,9 +258,10 @@ namespace spectre::es2025 {
         return EnsureModuleLocked(specifier, outHandle);
     }
 
+
     ModuleLoaderModule::EvaluationResult ModuleLoaderModule::Evaluate(Handle handle, bool forceReload) {
-        std::lock_guard<std::mutex> lock(m_Mutex);
         EvaluationResult result{};
+        std::unique_lock<std::mutex> lock(m_Mutex);
         if (handle == kInvalidHandle) {
             result.status = StatusCode::InvalidArgument;
             result.diagnostics = "Invalid module handle";
@@ -274,8 +275,8 @@ namespace spectre::es2025 {
             return result;
         }
 
-        auto &rootSlot = m_Slots[index];
-        if (!rootSlot.inUse) {
+        auto *rootSlot = &m_Slots[index];
+        if (!rootSlot->inUse) {
             result.status = StatusCode::NotFound;
             result.diagnostics = "Module slot unused";
             return result;
@@ -291,24 +292,37 @@ namespace spectre::es2025 {
         }
         m_Metrics.graphBuilds += 1;
 
-        auto computeDependencyStamp = [this](const ModuleRecord &record) {
-            return MaxDependencyVersion(record);
-        };
+        result.status = rootSlot->record.lastStatus;
+        result.value = rootSlot->record.lastValue;
+        result.diagnostics = rootSlot->record.diagnostics;
+        result.version = rootSlot->record.version;
 
-        auto evaluateModule = [&](Slot &slotRef, bool forceRoot) -> bool {
-            auto &record = slotRef.record;
-            std::uint64_t dependencyStamp = computeDependencyStamp(record);
+        for (auto moduleHandle: m_EvaluationOrder) {
+            auto *slot = ResolveSlot(moduleHandle);
+            if (!slot) {
+                continue;
+            }
+
+            auto &record = slot->record;
+            bool isRoot = moduleHandle == handle;
+            std::uint64_t dependencyStamp = MaxDependencyVersion(record);
             bool dependenciesChanged = dependencyStamp != record.dependencyStamp;
-            bool needsEvaluation = forceRoot || record.dirty || dependenciesChanged
+            bool needsEvaluation = (isRoot && forceReload) || record.dirty || dependenciesChanged
                                    || record.state != State::Evaluated
                                    || record.lastStatus != StatusCode::Ok;
 
             if (!needsEvaluation) {
                 m_Metrics.cacheHits += 1;
-                return true;
+                if (isRoot) {
+                    result.status = record.lastStatus;
+                    result.value = record.lastValue;
+                    result.diagnostics = record.diagnostics;
+                    result.version = record.version;
+                }
+                continue;
             }
-            m_Metrics.cacheMisses += 1;
 
+            m_Metrics.cacheMisses += 1;
             if (!m_Runtime) {
                 record.evaluating = false;
                 record.state = State::Failed;
@@ -316,10 +330,14 @@ namespace spectre::es2025 {
                 record.diagnostics = "Runtime unavailable";
                 result.status = StatusCode::InternalError;
                 result.diagnostics = record.diagnostics;
-                return false;
+                m_EvaluationOrder.clear();
+                return result;
             }
 
             record.evaluating = true;
+
+            auto contextName = record.contextName.empty() ? m_DefaultContextName : record.contextName;
+            auto stackSize = record.explicitStackSize != 0 ? record.explicitStackSize : m_DefaultStackSize;
 
             if (record.source.empty()) {
                 if (!m_Resolver) {
@@ -329,8 +347,11 @@ namespace spectre::es2025 {
                     record.diagnostics = "Module source unavailable";
                     result.status = record.lastStatus;
                     result.diagnostics = record.diagnostics;
-                    return false;
+                    m_EvaluationOrder.clear();
+                    return result;
                 }
+
+                lock.unlock();
                 std::string resolvedSource;
                 std::vector<std::string> resolvedDependencies;
                 m_Metrics.resolverRequests += 1;
@@ -338,128 +359,149 @@ namespace spectre::es2025 {
                                                  record.specifier,
                                                  resolvedSource,
                                                  resolvedDependencies);
-                if (resolverStatus != StatusCode::Ok) {
-                    record.evaluating = false;
-                    record.state = State::Failed;
-                    record.lastStatus = resolverStatus;
-                    record.diagnostics = "Resolver failed for module '" + record.specifier + "'";
-                    result.status = resolverStatus;
-                    result.diagnostics = record.diagnostics;
-                    return false;
+                lock.lock();
+
+                slot = ResolveSlot(moduleHandle);
+                if (!slot || !slot->inUse) {
+                    continue;
                 }
+
+                auto &resolvedRecord = slot->record;
+                if (resolverStatus != StatusCode::Ok) {
+                    resolvedRecord.evaluating = false;
+                    resolvedRecord.state = State::Failed;
+                    resolvedRecord.lastStatus = resolverStatus;
+                    resolvedRecord.diagnostics = "Resolver failed for module '" + resolvedRecord.specifier + "'";
+                    result.status = resolverStatus;
+                    result.diagnostics = resolvedRecord.diagnostics;
+                    m_EvaluationOrder.clear();
+                    return result;
+                }
+
                 m_ScratchDependencies.clear();
                 m_ScratchDependencies.reserve(resolvedDependencies.size());
                 for (const auto &dep: resolvedDependencies) {
                     m_ScratchDependencies.push_back(dep);
                 }
+
                 RegisterOptions resolverOptions;
-                resolverOptions.contextName = record.contextName;
-                resolverOptions.stackSize = record.explicitStackSize;
+                resolverOptions.contextName = contextName;
+                resolverOptions.stackSize = stackSize;
                 resolverOptions.overrideDependencies = true;
-                auto updateStatus = UpdateModuleLocked(slotRef,
+                auto updateStatus = UpdateModuleLocked(*slot,
                                                        resolvedSource,
                                                        resolverOptions,
                                                        m_ScratchDependencies);
                 if (updateStatus != StatusCode::Ok) {
-                    record.evaluating = false;
+                    auto &failedRecord = slot->record;
+                    failedRecord.evaluating = false;
+                    failedRecord.state = State::Failed;
+                    failedRecord.lastStatus = updateStatus;
+                    failedRecord.diagnostics = "Failed to apply resolved module";
                     result.status = updateStatus;
-                    result.diagnostics = "Failed to apply resolved module";
-                    return false;
+                    result.diagnostics = failedRecord.diagnostics;
+                    m_EvaluationOrder.clear();
+                    return result;
                 }
+
                 m_Metrics.resolverHits += 1;
-                dependencyStamp = computeDependencyStamp(record);
+                dependencyStamp = MaxDependencyVersion(slot->record);
+                contextName = slot->record.contextName.empty() ? m_DefaultContextName : slot->record.contextName;
+                stackSize = slot->record.explicitStackSize != 0 ? slot->record.explicitStackSize : m_DefaultStackSize;
             }
 
-            auto contextName = record.contextName.empty() ? m_DefaultContextName : record.contextName;
-            auto stackSize = record.explicitStackSize != 0 ? record.explicitStackSize : m_DefaultStackSize;
-            auto contextStatus = EnsureContextLocked(contextName, stackSize);
+            auto contextStatus = EnsureContextUnlocked(contextName, stackSize, lock);
             if (contextStatus != StatusCode::Ok) {
-                record.evaluating = false;
-                record.state = State::Failed;
-                record.lastStatus = contextStatus;
-                record.diagnostics = "Failed to ensure module context";
-                result.status = contextStatus;
-                result.diagnostics = record.diagnostics;
-                return false;
+                slot = ResolveSlot(moduleHandle);
+                if (slot && slot->inUse) {
+                    slot->record.evaluating = false;
+                    slot->record.state = State::Failed;
+                    slot->record.lastStatus = contextStatus;
+                    slot->record.diagnostics = "Failed to ensure module context";
+                    result.status = contextStatus;
+                    result.diagnostics = slot->record.diagnostics;
+                }
+                m_EvaluationOrder.clear();
+                return result;
+            }
+
+            slot = ResolveSlot(moduleHandle);
+            if (!slot || !slot->inUse) {
+                continue;
             }
 
             spectre::ScriptSource script{};
-            script.name = record.specifier;
-            script.source = record.source;
+            script.name = slot->record.specifier;
+            script.source = slot->record.source;
+
+            lock.unlock();
             auto loadResult = m_Runtime->LoadScript(contextName, script);
-            if (loadResult.status != StatusCode::Ok) {
-                record.evaluating = false;
-                record.state = State::Failed;
-                record.lastStatus = loadResult.status;
-                record.diagnostics = loadResult.diagnostics;
-                result.status = loadResult.status;
-                result.diagnostics = loadResult.diagnostics;
-                return false;
+            lock.lock();
+
+            slot = ResolveSlot(moduleHandle);
+            if (!slot || !slot->inUse) {
+                continue;
             }
 
+            if (loadResult.status != StatusCode::Ok) {
+                auto &loadRecord = slot->record;
+                loadRecord.evaluating = false;
+                loadRecord.state = State::Failed;
+                loadRecord.lastStatus = loadResult.status;
+                loadRecord.diagnostics = loadResult.diagnostics;
+                result.status = loadResult.status;
+                result.diagnostics = loadResult.diagnostics;
+                m_EvaluationOrder.clear();
+                return result;
+            }
+
+            lock.unlock();
             auto evalResult = m_Runtime->EvaluateSync(contextName, script.name);
-            record.lastStatus = evalResult.status;
-            record.diagnostics = evalResult.diagnostics;
-            record.lastValue = evalResult.value;
-            record.dirty = false;
-            record.dependencyStamp = dependencyStamp;
-            record.evaluating = false;
+            lock.lock();
+
+            slot = ResolveSlot(moduleHandle);
+            if (!slot || !slot->inUse) {
+                continue;
+            }
+
+            auto &finalRecord = slot->record;
+            finalRecord.lastStatus = evalResult.status;
+            finalRecord.diagnostics = evalResult.diagnostics;
+            finalRecord.lastValue = evalResult.value;
+            finalRecord.evaluating = false;
+
             if (evalResult.status == StatusCode::Ok) {
-                record.state = State::Evaluated;
-                record.version += 1;
+                finalRecord.state = State::Evaluated;
+                finalRecord.dirty = false;
+                finalRecord.dependencyStamp = dependencyStamp;
+                finalRecord.version += 1;
                 m_Metrics.evaluations += 1;
+                if (isRoot) {
+                    result.status = finalRecord.lastStatus;
+                    result.value = finalRecord.lastValue;
+                    result.diagnostics = finalRecord.diagnostics;
+                    result.version = finalRecord.version;
+                }
             } else {
-                record.state = State::Failed;
+                finalRecord.state = State::Failed;
+                finalRecord.dirty = true;
                 m_Metrics.evaluationErrors += 1;
                 result.status = evalResult.status;
                 result.diagnostics = evalResult.diagnostics;
                 result.value = evalResult.value;
-                result.version = record.version;
-                return false;
-            }
-
-            if (slotRef.record.handle == handle) {
-                result.status = evalResult.status;
-                result.value = evalResult.value;
-                result.diagnostics = evalResult.diagnostics;
-                result.version = record.version;
-            }
-            return true;
-        };
-
-        result.status = rootSlot.record.lastStatus;
-        result.value = rootSlot.record.lastValue;
-        result.diagnostics = rootSlot.record.diagnostics;
-        result.version = rootSlot.record.version;
-
-        for (auto moduleHandle: m_EvaluationOrder) {
-            auto moduleIndex = ExtractIndex(moduleHandle);
-            if (moduleIndex >= m_Slots.size()) {
-                continue;
-            }
-            auto &slot = m_Slots[moduleIndex];
-            if (!slot.inUse) {
-                continue;
-            }
-            bool isRoot = moduleHandle == handle;
-            if (!evaluateModule(slot, forceReload && isRoot)) {
+                result.version = finalRecord.version;
                 m_EvaluationOrder.clear();
                 return result;
-            }
-            if (isRoot && slot.record.lastStatus == StatusCode::Ok) {
-                result.status = slot.record.lastStatus;
-                result.value = slot.record.lastValue;
-                result.diagnostics = slot.record.diagnostics;
-                result.version = slot.record.version;
             }
         }
 
         m_EvaluationOrder.clear();
-        if (rootSlot.record.state == State::Evaluated) {
-            result.status = rootSlot.record.lastStatus;
-            result.value = rootSlot.record.lastValue;
-            result.diagnostics = rootSlot.record.diagnostics;
-            result.version = rootSlot.record.version;
+        rootSlot = ResolveSlot(handle);
+        if (rootSlot && rootSlot->inUse && rootSlot->record.state == State::Evaluated) {
+            result.status = rootSlot->record.lastStatus;
+            result.value = rootSlot->record.lastValue;
+            result.diagnostics = rootSlot->record.diagnostics;
+            result.version = rootSlot->record.version;
         }
         return result;
     }
@@ -701,23 +743,33 @@ namespace spectre::es2025 {
         return StatusCode::Ok;
     }
 
-    StatusCode ModuleLoaderModule::EnsureContextLocked(std::string_view contextName, std::uint32_t stackSize) {
+
+    StatusCode ModuleLoaderModule::EnsureContextUnlocked(std::string_view contextName,
+                                                         std::uint32_t stackSize,
+                                                         std::unique_lock<std::mutex> &lock) {
         if (!m_Runtime) {
             return StatusCode::InternalError;
         }
-        if (m_ContextLookup.find(contextName) != m_ContextLookup.end()) {
+
+        std::string key(contextName);
+        if (m_ContextLookup.find(key) != m_ContextLookup.end()) {
             return StatusCode::Ok;
         }
-        std::string key(contextName);
+
+        auto initialStack = stackSize != 0 ? stackSize : m_DefaultStackSize;
+
+        lock.unlock();
         spectre::ContextConfig config{};
         config.name = key;
-        config.initialStackSize = stackSize != 0 ? stackSize : m_DefaultStackSize;
+        config.initialStackSize = initialStack;
         auto status = m_Runtime->CreateContext(config, nullptr);
+        lock.lock();
+
         if (status == StatusCode::AlreadyExists) {
             status = StatusCode::Ok;
         }
-        if (status == StatusCode::Ok) {
-            m_ContextLookup.emplace(std::move(key), config.initialStackSize);
+        if (status == StatusCode::Ok && m_ContextLookup.find(key) == m_ContextLookup.end()) {
+            m_ContextLookup.emplace(std::move(key), initialStack);
         }
         return status;
     }

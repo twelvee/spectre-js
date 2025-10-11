@@ -191,7 +191,9 @@ namespace spectre::es2025 {
                                       const RegisterOptions &options,
                                       const std::vector<std::string> &dependencies);
 
-        StatusCode EnsureContextLocked(std::string_view contextName, std::uint32_t stackSize);
+        StatusCode EnsureContextUnlocked(std::string_view contextName,
+                                         std::uint32_t stackSize,
+                                         std::unique_lock<std::mutex> &lock);
 
         void DetachDependencies(ModuleRecord &record);
         void AttachDependencies(ModuleRecord &record, const std::vector<Handle> &handles);
