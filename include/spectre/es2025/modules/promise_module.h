@@ -173,6 +173,7 @@ namespace spectre::es2025 {
 
         std::uint32_t AcquireReactionSlot();
         void ReleaseReactionSlot(std::uint32_t index) noexcept;
+        void TrimMicrotaskQueue() noexcept;
 
         void EnqueueReactions(PromiseRecord &record);
         void ProcessMicrotasks(std::size_t budget) noexcept;
@@ -199,6 +200,7 @@ namespace spectre::es2025 {
         std::vector<ReactionSlot> m_Reactions;
         std::vector<std::uint32_t> m_FreeReactions;
         std::vector<std::uint32_t> m_MicrotaskQueue;
+        std::size_t m_MicrotaskHead;
 
         Metrics m_Metrics;
     };

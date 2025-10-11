@@ -99,6 +99,7 @@ namespace spectre::es2025 {
           m_Reactions(),
           m_FreeReactions(),
           m_MicrotaskQueue(),
+          m_MicrotaskHead(0),
           m_Metrics() {
     }
 
@@ -134,7 +135,7 @@ namespace spectre::es2025 {
         }
         m_CurrentFrame = info.frameIndex;
         m_TotalSeconds += info.deltaSeconds;
-        ProcessMicrotasks(m_MicrotaskQueue.size());
+        ProcessMicrotasks(PendingMicrotasks());
     }
 
     void PromiseModule::OptimizeGpu(const ModuleGpuContext &context) noexcept {
@@ -185,6 +186,7 @@ namespace spectre::es2025 {
         }
 
         m_MicrotaskQueue.clear();
+        m_MicrotaskHead = 0;
         m_MicrotaskQueue.reserve(reactionCapacity);
         m_Metrics = Metrics();
         return StatusCode::Ok;
@@ -339,7 +341,8 @@ namespace spectre::es2025 {
     }
 
     std::size_t PromiseModule::PendingMicrotasks() const noexcept {
-        return m_MicrotaskQueue.size();
+        const auto queued = m_MicrotaskQueue.size();
+        return queued >= m_MicrotaskHead ? queued - m_MicrotaskHead : 0;
     }
 
     std::size_t PromiseModule::PromiseCount() const noexcept {
@@ -475,22 +478,23 @@ namespace spectre::es2025 {
             }
             index = next;
         }
-        if (m_MicrotaskQueue.size() > m_Metrics.maxReactionQueue) {
-            m_Metrics.maxReactionQueue = m_MicrotaskQueue.size();
+        const auto queued = PendingMicrotasks();
+        if (queued > m_Metrics.maxReactionQueue) {
+            m_Metrics.maxReactionQueue = queued;
         }
     }
 
     void PromiseModule::ProcessMicrotasks(std::size_t budget) noexcept {
         std::size_t processed = 0;
-        std::size_t limit = std::max<std::size_t>(budget, m_Reactions.empty() ? 1 : m_Reactions.size());
-        const std::size_t hardCap = (m_Reactions.empty() ? 256u : m_Reactions.size() * 4u);
-        while (!m_MicrotaskQueue.empty() && processed < limit) {
-            auto index = m_MicrotaskQueue.back();
-            m_MicrotaskQueue.pop_back();
+        const std::size_t reactionSlots = m_Reactions.size();
+        std::size_t limit = std::max<std::size_t>(budget, reactionSlots == 0 ? static_cast<std::size_t>(1) : reactionSlots);
+        const std::size_t hardCap = reactionSlots == 0 ? static_cast<std::size_t>(256u) : reactionSlots * 4u;
+        while (m_MicrotaskHead < m_MicrotaskQueue.size() && processed < limit) {
+            const auto index = m_MicrotaskQueue[m_MicrotaskHead++];
             RunReaction(index);
             ++processed;
-            if (!m_MicrotaskQueue.empty() && processed == limit) {
-                const auto pending = m_MicrotaskQueue.size();
+            if (m_MicrotaskHead < m_MicrotaskQueue.size() && processed == limit) {
+                const auto pending = m_MicrotaskQueue.size() - m_MicrotaskHead;
                 limit += pending;
                 if (limit > hardCap) {
                     limit = hardCap;
@@ -500,8 +504,31 @@ namespace spectre::es2025 {
                 }
             }
         }
-        if (processed >= (m_Reactions.empty() ? 0 : hardCap) && !m_MicrotaskQueue.empty()) {
+        TrimMicrotaskQueue();
+    }
+
+    void PromiseModule::TrimMicrotaskQueue() noexcept {
+        if (m_MicrotaskHead == 0) {
+            return;
+        }
+        const auto queued = m_MicrotaskQueue.size();
+        if (m_MicrotaskHead >= queued) {
             m_MicrotaskQueue.clear();
+            m_MicrotaskHead = 0;
+            return;
+        }
+        const auto pending = queued - m_MicrotaskHead;
+        if (pending == 0) {
+            m_MicrotaskQueue.clear();
+            m_MicrotaskHead = 0;
+            return;
+        }
+        if (pending <= queued / 2) {
+            std::memmove(m_MicrotaskQueue.data(),
+                         m_MicrotaskQueue.data() + m_MicrotaskHead,
+                         pending * sizeof(std::uint32_t));
+            m_MicrotaskQueue.resize(pending);
+            m_MicrotaskHead = 0;
         }
     }
 
